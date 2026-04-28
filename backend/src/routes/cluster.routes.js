@@ -18,6 +18,17 @@ const requireClusterKey = (req, res, next) => {
   return next();
 };
 
+
+router.get('/public-health', (req, res) => {
+  const local = clusterService.getLocalState();
+  res.json({
+    ok: true,
+    serverName: local.serverName,
+    role: local.role,
+    app: 'cluster-mvp'
+  });
+});
+
 router.use(requireClusterKey);
 
 router.get('/health', (req, res) => {

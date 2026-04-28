@@ -220,7 +220,7 @@ class ClusterService {
   async checkPublicUrlAvailable() {
     if (!env.ngrokDomain) return true;
 
-    const publicUrl = `https://${env.ngrokDomain}`;
+    const publicHealthUrl = `https://${env.ngrokDomain}/internal/public-health`;
     const timeoutMs = env.publicUrlCheckTimeoutMs;
 
     try {
@@ -228,20 +228,45 @@ class ClusterService {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       let response;
       try {
-        response = await fetch(publicUrl, { method: 'HEAD', signal: controller.signal, redirect: 'manual' });
+        response = await fetch(publicHealthUrl, {
+          method: 'GET',
+          signal: controller.signal,
+          redirect: 'manual'
+        });
       } finally {
         clearTimeout(timer);
       }
 
-      if (response) {
-        console.log(`[cluster] Domínio público ${env.ngrokDomain} está em uso`);
+      if (!response || response.status !== 200) {
+        console.log('[cluster] Domínio ngrok responde página de erro/offline. Considerando domínio livre.');
+        return true;
+      }
+
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('application/json')) {
+        console.log('[cluster] Domínio ngrok responde página de erro/offline. Considerando domínio livre.');
+        return true;
+      }
+
+      let data;
+      try {
+        data = await response.json();
+      } catch (_error) {
+        console.log('[cluster] Domínio ngrok responde página de erro/offline. Considerando domínio livre.');
+        return true;
+      }
+
+      if (data?.ok === true && data?.app === 'cluster-mvp') {
+        console.log('[cluster] Domínio público já está servindo o cluster. Considerando em uso.');
         return false;
       }
+
+      console.log('[cluster] Domínio ngrok não pertence ao cluster-mvp. Considerando domínio livre.');
+      return true;
     } catch (_error) {
+      console.log('[cluster] Domínio ngrok responde página de erro/offline. Considerando domínio livre.');
       return true;
     }
-
-    return true;
   }
 
   async checkActivePublicHost(publicUrl) {
