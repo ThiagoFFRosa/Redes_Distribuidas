@@ -1,6 +1,7 @@
 const express = require('express');
 const env = require('../config/env');
 const clusterService = require('../services/cluster.service');
+const clusterNodesService = require('../services/cluster-nodes.service');
 
 const router = express.Router();
 
@@ -56,6 +57,10 @@ router.post('/nodes/add', (req, res) => {
 
   if (!serverName || !serverUrl) {
     return res.status(400).json({ message: 'serverName e serverUrl são obrigatórios.' });
+  }
+
+  if (!clusterNodesService.isValidClusterUrl(serverUrl)) {
+    return res.status(400).json({ message: clusterNodesService.getInvalidClusterUrlMessage() });
   }
 
   const addedNode = clusterService.upsertNode({

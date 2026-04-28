@@ -2,6 +2,7 @@ const serversBody = document.getElementById('serversBody');
 const summary = document.getElementById('summary');
 const statusMsg = document.getElementById('statusMsg');
 const refreshBtn = document.getElementById('refreshBtn');
+const cleanupNodesBtn = document.getElementById('cleanupNodesBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const newServerUrlInput = document.getElementById('newServerUrl');
 const testConnectionBtn = document.getElementById('testConnectionBtn');
@@ -110,6 +111,26 @@ const loadServers = async (silent = false) => {
   }
 };
 
+
+const cleanupInvalidNodes = async () => {
+  cleanupNodesBtn.disabled = true;
+  try {
+    const response = await fetch('/api/servers/cleanup', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || 'Falha ao limpar nós inválidos.');
+    }
+
+    renderSummary(data);
+    renderServers(data.servers);
+    showMessage(data.message || 'Nós inválidos removidos com sucesso.');
+  } catch (error) {
+    showMessage(error.message || 'Erro ao limpar nós inválidos.', true);
+  } finally {
+    cleanupNodesBtn.disabled = false;
+  }
+};
+
 const switchHost = async (targetUrl) => {
   try {
     showMessage('Tentando liberar domínio público...');
@@ -197,6 +218,7 @@ const registerServer = async () => {
 };
 
 refreshBtn.addEventListener('click', () => loadServers());
+cleanupNodesBtn.addEventListener('click', cleanupInvalidNodes);
 testConnectionBtn.addEventListener('click', testConnection);
 registerServerBtn.addEventListener('click', registerServer);
 
