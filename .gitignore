@@ -1,0 +1,46 @@
+# Dependências
+node_modules/
+
+# Arquivos de ambiente (manter apenas o exemplo)
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporários
+tmp/
+temp/
+*.tmp
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# IDEs/editores
+.vscode/
+.idea/
+*.code-workspace
+
+# Build/output
+dist/
+build/
+
+# Runtime
+*.pid
+*.seed
+
+# Arquivos locais de cluster
+cluster-nodes.json
+
+# ngrok
+.ngrok2/
+ngrok.yml
+
+# Coverage/testes
+coverage/
