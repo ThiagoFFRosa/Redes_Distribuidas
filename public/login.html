@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login - Cluster Admin</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body class="auth-body">
+    <div class="auth-card">
+      <h1>Cluster Admin</h1>
+      <p>Entre para gerenciar o HOST ativo.</p>
+      <form id="loginForm">
+        <label>Usuário <input type="text" id="username" required /></label>
+        <label>Senha <input type="password" id="password" required /></label>
+        <button type="submit">Entrar</button>
+      </form>
+      <p id="loginError" class="error"></p>
+    </div>
+    <script src="/assets/login.js"></script>
+  </body>
+</html>

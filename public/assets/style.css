@@ -1,0 +1,99 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1117;
+  --panel: #171b24;
+  --text: #ecf0f8;
+  --muted: #a0aac2;
+  --accent: #5b8cff;
+  --danger: #ff5f7a;
+  --host: #2bc870;
+  --standby: #f8cc46;
+  --offline: #ff5a5a;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+.auth-body {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-card, .card {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 1.2rem;
+  border: 1px solid #242b3a;
+}
+
+.auth-card { width: 360px; }
+label { display: grid; gap: .4rem; margin: .8rem 0; }
+input, button {
+  border-radius: 8px;
+  border: 1px solid #323e57;
+  background: #0d1422;
+  color: var(--text);
+  padding: .7rem;
+}
+button { cursor: pointer; background: var(--accent); border: 0; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+button.danger { background: var(--danger); }
+
+.layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #10151f;
+  border-right: 1px solid #2c3242;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .8rem;
+}
+.sidebar a {
+  color: var(--text);
+  text-decoration: none;
+  padding: .55rem .7rem;
+  border-radius: 8px;
+  background: #242d43;
+}
+
+.content { padding: 1rem; }
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: .8rem;
+  margin: 1rem 0;
+}
+
+table { width: 100%; border-collapse: collapse; background: var(--panel); }
+th, td { padding: .8rem; border-bottom: 1px solid #293149; text-align: left; font-size: .92rem; }
+
+.badge {
+  border-radius: 999px;
+  padding: .2rem .55rem;
+  font-size: .78rem;
+  font-weight: 700;
+}
+.badge.host { background: color-mix(in srgb, var(--host) 30%, transparent); color: #7ff9b1; }
+.badge.standby { background: color-mix(in srgb, var(--standby) 30%, transparent); color: #ffe180; }
+.badge.offline { background: color-mix(in srgb, var(--offline) 30%, transparent); color: #ffc1c1; }
+.badge.online { background: color-mix(in srgb, var(--host) 30%, transparent); color: #82ffc9; }
+
+.error { color: #ff9fb0; }
+.success { color: #9cf7ba; }
