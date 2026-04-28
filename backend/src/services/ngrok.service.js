@@ -5,6 +5,13 @@ class NgrokService {
   constructor() {
     this.publicUrl = null;
     this.running = false;
+
+    console.log(
+      `[ngrok] startup config: ENABLE_NGROK=${env.enableNgrok}, NGROK_DOMAIN=${env.ngrokDomain || '(vazio)'}`
+    );
+    console.log(
+      `[ngrok] modo esperado: ${env.ngrokDomain ? 'domínio fixo (NGROK_DOMAIN)' : 'URL aleatória'}`
+    );
   }
 
   async startTunnel(port) {
@@ -18,36 +25,66 @@ class NgrokService {
       return this.publicUrl;
     }
 
-    try {
-      const options = {
-        addr: port,
-        proto: 'http',
-        authtoken: env.ngrokAuthtoken || undefined
-      };
+    const baseOptions = {
+      addr: port,
+      proto: 'http',
+      authtoken: env.ngrokAuthtoken || undefined
+    };
 
-      if (env.ngrokDomain) {
-        options.domain = env.ngrokDomain;
-      } else {
-        options.region = env.ngrokRegion;
-      }
-
-      const url = await ngrok.connect(options);
-
-      this.publicUrl = url;
-      this.running = true;
-      return this.publicUrl;
-    } catch (error) {
-      const message = error?.message || 'erro desconhecido';
-      if (env.ngrokDomain && /domain|already in use|in use|ERR_NGROK_/i.test(message)) {
-        console.warn(`[ngrok] domínio fixo indisponível (${env.ngrokDomain}): ${message}`);
-      } else {
+    if (!env.ngrokDomain) {
+      try {
+        const options = { ...baseOptions, region: env.ngrokRegion };
+        console.log('[ngrok] iniciando em modo URL aleatória.');
+        const url = await ngrok.connect(options);
+        this.publicUrl = url;
+        this.running = true;
+        return this.publicUrl;
+      } catch (error) {
+        const message = error?.message || 'erro desconhecido';
         console.error('[ngrok] erro ao iniciar túnel:', message);
+        this.publicUrl = null;
+        this.running = false;
+        return null;
       }
-
-      this.publicUrl = null;
-      this.running = false;
-      return null;
     }
+
+    const expectedDomain = env.ngrokDomain;
+    const domainModes = ['domain', 'hostname'];
+
+    for (const field of domainModes) {
+      try {
+        const options = { ...baseOptions, [field]: expectedDomain };
+        console.log(`[ngrok] tentando domínio fixo com opção "${field}": ${expectedDomain}`);
+
+        const url = await ngrok.connect(options);
+        if (!String(url).includes(expectedDomain)) {
+          console.error('[ngrok] NGROK_DOMAIN configurado, mas ngrok retornou URL aleatória');
+          console.error(`[ngrok] URL retornada: ${url}`);
+          await ngrok.disconnect(url);
+          await ngrok.kill();
+          continue;
+        }
+
+        console.log(`[ngrok] túnel ativo com domínio fixo usando "${field}": ${url}`);
+        this.publicUrl = url;
+        this.running = true;
+        return this.publicUrl;
+      } catch (error) {
+        const message = error?.message || 'erro desconhecido';
+        console.warn(`[ngrok] falha ao iniciar com "${field}": ${message}`);
+      }
+    }
+
+    try {
+      await ngrok.kill();
+    } catch (_error) {
+      // ignora erro de limpeza final
+    }
+
+    console.error('[ngrok] não foi possível subir túnel com NGROK_DOMAIN configurado.');
+    this.publicUrl = null;
+    this.running = false;
+    return null;
   }
 
   async stopTunnel() {
