@@ -4,6 +4,9 @@ const clusterNodesService = require('./cluster-nodes.service');
 
 const ROLE_HOST = 'HOST';
 const ROLE_STANDBY = 'STANDBY';
+const HOST_TAKEOVER_ERROR = 'Falha ao assumir HOST: domínio ngrok indisponível após 3 tentativas';
+const NO_PUBLIC_HOST_ERROR = 'Nenhum servidor conseguiu assumir o domínio público';
+const SWITCH_WAIT_BEFORE_HOST_MS = 2000;
 
 const withTimeout = async (url, options = {}, timeoutMs = env.heartbeatIntervalMs) => {
   const controller = new AbortController();
@@ -19,11 +22,14 @@ const withTimeout = async (url, options = {}, timeoutMs = env.heartbeatIntervalM
       signal: controller.signal
     });
 
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      const error = new Error(data.error || data.message || `HTTP ${response.status}`);
+      error.payload = data;
+      throw error;
     }
 
-    return await response.json();
+    return data;
   } finally {
     clearTimeout(timer);
   }
@@ -215,13 +221,51 @@ class ClusterService {
   }
 
   async makeLocalHost() {
-    await this.setRole(ROLE_HOST);
-    return this.getLocalState();
+    if (!env.enableNgrok) {
+      state.role = ROLE_HOST;
+      state.publicUrl = null;
+      return {
+        ok: true,
+        serverName: state.serverName,
+        role: state.role,
+        publicUrl: state.publicUrl
+      };
+    }
+
+    try {
+      const publicUrl = await ngrokService.startTunnelWithRetry(env.port);
+      state.role = ROLE_HOST;
+      state.publicUrl = publicUrl;
+      return {
+        ok: true,
+        serverName: state.serverName,
+        role: state.role,
+        publicUrl: state.publicUrl
+      };
+    } catch (error) {
+      state.role = ROLE_STANDBY;
+      state.publicUrl = null;
+      console.error(`[cluster] ${HOST_TAKEOVER_ERROR}`);
+      return {
+        ok: false,
+        serverName: state.serverName,
+        role: state.role,
+        publicUrl: null,
+        error: error?.message || 'Falha ao iniciar ngrok após 3 tentativas'
+      };
+    }
   }
 
   async makeLocalStandby() {
-    await this.setRole(ROLE_STANDBY);
-    return this.getLocalState();
+    state.role = ROLE_STANDBY;
+    await ngrokService.stopTunnel();
+    state.publicUrl = null;
+    return {
+      ok: true,
+      serverName: state.serverName,
+      role: state.role,
+      publicUrl: state.publicUrl
+    };
   }
 
   async tellPeer(peerUrl, path, body = undefined) {
@@ -260,26 +304,50 @@ class ClusterService {
       })
     );
 
+    await new Promise((resolve) => setTimeout(resolve, SWITCH_WAIT_BEFORE_HOST_MS));
+
+    let targetResult = null;
     if (targetUrl === state.serverUrl) {
-      await this.makeLocalHost();
+      targetResult = await this.makeLocalHost();
     } else {
-      await this.tellPeer(targetUrl, '/internal/become-host');
+      try {
+        targetResult = await this.tellPeer(targetUrl, '/internal/become-host');
+      } catch (error) {
+        targetResult = {
+          ok: false,
+          error: error?.message || 'Falha ao iniciar ngrok após 3 tentativas'
+        };
+      }
       await this.makeLocalStandby();
     }
 
-    return this.getKnownServersWithStatus();
+    if (!targetResult?.ok) {
+      console.error(`[cluster] falha ao promover ${targetUrl} para HOST: ${targetResult?.error || 'erro desconhecido'}`);
+      const fallbackHost = await this.electHostIfNeeded(new Set([targetUrl]));
+      const status = await this.getKnownServersWithStatus();
+      return {
+        servers: status,
+        switched: false,
+        message: fallbackHost ? HOST_TAKEOVER_ERROR : NO_PUBLIC_HOST_ERROR
+      };
+    }
+
+    return {
+      servers: await this.getKnownServersWithStatus(),
+      switched: true
+    };
   }
 
-  pickElectionWinner(servers) {
+  pickElectionWinner(servers, excludedUrls = new Set()) {
     const online = servers
-      .filter((server) => server.online)
+      .filter((server) => server.online && !excludedUrls.has(server.serverUrl))
       .map((server) => ({ serverName: server.serverName, serverUrl: server.serverUrl }))
       .sort((a, b) => a.serverName.localeCompare(b.serverName));
 
     return online[0] || null;
   }
 
-  async electHostIfNeeded() {
+  async electHostIfNeeded(excludedUrls = new Set()) {
     const firstSnapshot = await this.getKnownServersWithStatus();
     const firstHost = this.findActiveHost(firstSnapshot);
 
@@ -290,7 +358,7 @@ class ClusterService {
       return firstHost;
     }
 
-    const winnerFirstPass = this.pickElectionWinner(firstSnapshot);
+    const winnerFirstPass = this.pickElectionWinner(firstSnapshot, excludedUrls);
     if (!winnerFirstPass) return null;
 
     const secondSnapshot = await this.getKnownServersWithStatus();
@@ -302,21 +370,38 @@ class ClusterService {
       return secondHost;
     }
 
-    const winnerSecondPass = this.pickElectionWinner(secondSnapshot);
+    const winnerSecondPass = this.pickElectionWinner(secondSnapshot, excludedUrls);
     if (!winnerSecondPass || winnerSecondPass.serverUrl !== winnerFirstPass.serverUrl) {
       return null;
     }
 
     if (winnerSecondPass.serverUrl === state.serverUrl) {
-      await this.makeLocalHost();
-      return this.findActiveHost(await this.getKnownServersWithStatus());
+      const localHostResult = await this.makeLocalHost();
+      if (localHostResult.ok) {
+        return this.findActiveHost(await this.getKnownServersWithStatus());
+      }
+
+      const nextExcluded = new Set(excludedUrls);
+      nextExcluded.add(state.serverUrl);
+      return this.electHostIfNeeded(nextExcluded);
     }
 
     if (state.role === ROLE_HOST) {
       await this.makeLocalStandby();
     }
 
-    return winnerSecondPass;
+    try {
+      const remoteResult = await this.tellPeer(winnerSecondPass.serverUrl, '/internal/become-host');
+      if (remoteResult?.ok) {
+        return winnerSecondPass;
+      }
+    } catch (error) {
+      console.error(`[cluster] eleição falhou ao promover ${winnerSecondPass.serverUrl}:`, error.message);
+    }
+
+    const nextExcluded = new Set(excludedUrls);
+    nextExcluded.add(winnerSecondPass.serverUrl);
+    return this.electHostIfNeeded(nextExcluded);
   }
 }
 

@@ -112,6 +112,7 @@ const loadServers = async (silent = false) => {
 
 const switchHost = async (targetUrl) => {
   try {
+    showMessage('Tentando liberar domínio público...');
     const response = await fetch('/api/servers/switch-host', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -123,6 +124,13 @@ const switchHost = async (targetUrl) => {
 
     renderSummary(data);
     renderServers(data.servers);
+
+    if (!data.switchHost?.switched) {
+      showMessage(data.switchHost?.message || 'Falha ao assumir HOST. Tentando eleição automática.', true);
+      await loadServers(true);
+      return;
+    }
+
     showMessage(`HOST alterado para ${targetUrl}.`);
   } catch (error) {
     showMessage(error.message || 'Erro ao trocar HOST.', true);

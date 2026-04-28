@@ -95,7 +95,17 @@ router.post('/nodes/replace', (req, res) => {
 
 router.post('/become-host', async (req, res) => {
   const data = await clusterService.makeLocalHost();
-  res.json(data);
+  if (data.ok) {
+    return res.json(data);
+  }
+
+  return res.status(503).json({
+    ok: false,
+    serverName: data.serverName,
+    role: 'STANDBY',
+    publicUrl: null,
+    error: 'Falha ao iniciar ngrok após 3 tentativas'
+  });
 });
 
 router.post('/become-standby', async (req, res) => {
