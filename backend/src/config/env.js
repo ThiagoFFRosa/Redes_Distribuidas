@@ -30,5 +30,7 @@ module.exports = {
   enableNgrok: parseBoolean(process.env.ENABLE_NGROK, true),
   ngrokAuthtoken: process.env.NGROK_AUTHTOKEN || '',
   ngrokRegion: process.env.NGROK_REGION || 'sa',
-  ngrokDomain: (process.env.NGROK_DOMAIN || '').trim()
+  ngrokDomain: (process.env.NGROK_DOMAIN || '').trim(),
+  publicUrlCheckIntervalMs: parseNumber(process.env.PUBLIC_URL_CHECK_INTERVAL_MS, 30000),
+  publicUrlCheckTimeoutMs: parseNumber(process.env.PUBLIC_URL_CHECK_TIMEOUT_MS, 3000)
 };

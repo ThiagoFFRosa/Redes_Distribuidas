@@ -13,7 +13,8 @@ class HeartbeatService {
 
     try {
       await clusterService.refreshPeers();
-      const activeHost = clusterService.findActiveHost();
+      const known = clusterService.getKnownServers();
+      const activeHost = await clusterService.findValidActiveHost(known);
 
       if (!activeHost) {
         await clusterService.electHostIfNeeded();

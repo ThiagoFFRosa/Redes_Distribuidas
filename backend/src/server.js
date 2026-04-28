@@ -57,13 +57,21 @@ app.use((error, req, res, _next) => {
 });
 
 const start = async () => {
-  if (env.initialRole === 'HOST') {
-    await clusterService.makeLocalHost();
+  await clusterService.makeLocalStandby();
+
+  console.log('[cluster] Consultando peers antes de iniciar ngrok...');
+  await clusterService.refreshPeers();
+  const known = clusterService.getKnownServers();
+  const activeHost = await clusterService.findValidActiveHost(known);
+
+  if (activeHost && activeHost.serverUrl !== env.serverUrl) {
+    console.log(`[cluster] HOST ativo encontrado: ${activeHost.serverName}`);
+    console.log('[cluster] HOST ativo encontrado. Iniciando como STANDBY.');
+    console.log('[cluster] Ngrok não será iniciado neste servidor');
   } else {
-    await clusterService.makeLocalStandby();
+    await clusterService.electHostIfNeeded();
   }
 
-  await clusterService.electHostIfNeeded();
   heartbeatService.start();
 
   app.listen(env.port, () => {

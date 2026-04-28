@@ -45,7 +45,9 @@ const state = {
   nodes: [],
   peerRuntime: {},
   clusterMode: CLUSTER_MODE_NORMAL,
-  switchTarget: null
+  switchTarget: null,
+  lastDomainBusyAt: 0,
+  localPromotionRequested: false
 };
 
 class ClusterService {
@@ -211,7 +213,74 @@ class ClusterService {
 
   findActiveHost(servers = []) {
     const known = servers.length ? servers : this.getKnownServers();
-    return known.find((server) => server.online && server.role === ROLE_HOST) || null;
+    return known.find((server) => server.online && server.role === ROLE_HOST && Boolean(server.publicUrl)) || null;
+  }
+
+
+  async checkPublicUrlAvailable() {
+    if (!env.ngrokDomain) return true;
+
+    const publicUrl = `https://${env.ngrokDomain}`;
+    const timeoutMs = env.publicUrlCheckTimeoutMs;
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let response;
+      try {
+        response = await fetch(publicUrl, { method: 'HEAD', signal: controller.signal, redirect: 'manual' });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (response) {
+        console.log(`[cluster] Domínio público ${env.ngrokDomain} está em uso`);
+        return false;
+      }
+    } catch (_error) {
+      return true;
+    }
+
+    return true;
+  }
+
+  async checkActivePublicHost(publicUrl) {
+    if (!publicUrl) return false;
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), env.publicUrlCheckTimeoutMs);
+      let response;
+      try {
+        response = await fetch(publicUrl, { method: 'HEAD', signal: controller.signal, redirect: 'manual' });
+      } finally {
+        clearTimeout(timer);
+      }
+      return Boolean(response);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  async findValidActiveHost(servers = []) {
+    const known = servers.length ? servers : this.getKnownServers();
+    const local = this.getLocalState();
+
+    for (const server of known) {
+      if (server.role !== ROLE_HOST || !server.publicUrl) continue;
+
+      if (server.online) return server;
+      const canValidatePublic = server.serverUrl !== local.serverUrl;
+      if (canValidatePublic && await this.checkActivePublicHost(server.publicUrl)) {
+        return { ...server, online: true };
+      }
+    }
+
+    return null;
+  }
+
+  requestLocalPromotion() {
+    state.localPromotionRequested = true;
   }
 
   async setRole(role) {
@@ -228,8 +297,14 @@ class ClusterService {
   }
 
   async makeLocalHost() {
+    state.localPromotionRequested = Boolean(state.localPromotionRequested || state.role === ROLE_HOST);
+    if (!state.localPromotionRequested && state.role !== ROLE_HOST) {
+      return { ok: false, serverName: state.serverName, role: state.role, publicUrl: state.publicUrl, error: 'Promoção local não autorizada neste ciclo' };
+    }
+
     if (this.isSwitching() && state.switchTarget !== state.serverUrl) {
       console.warn('[cluster] Fallback bloqueado durante SWITCHING');
+      state.localPromotionRequested = false;
       return {
         ok: false,
         serverName: state.serverName,
@@ -242,6 +317,7 @@ class ClusterService {
     if (!env.enableNgrok) {
       state.role = ROLE_HOST;
       state.publicUrl = null;
+      state.localPromotionRequested = false;
       return {
         ok: true,
         serverName: state.serverName,
@@ -251,9 +327,19 @@ class ClusterService {
     }
 
     try {
+      const urlAvailable = await this.checkPublicUrlAvailable();
+      if (!urlAvailable) {
+        state.role = ROLE_STANDBY;
+        state.publicUrl = null;
+        state.lastDomainBusyAt = Date.now();
+        return { ok: false, serverName: state.serverName, role: state.role, publicUrl: null, error: 'Domínio público em uso. Promoção cancelada.' };
+      }
+
+      console.log('[cluster] Domínio público livre');
       const publicUrl = await ngrokService.startTunnelWithRetry(env.port);
       state.role = ROLE_HOST;
       state.publicUrl = publicUrl;
+      state.localPromotionRequested = false;
       return {
         ok: true,
         serverName: state.serverName,
@@ -264,6 +350,7 @@ class ClusterService {
       state.role = ROLE_STANDBY;
       state.publicUrl = null;
       console.error(`[cluster] ${HOST_TAKEOVER_ERROR}`);
+      state.localPromotionRequested = false;
       return {
         ok: false,
         serverName: state.serverName,
@@ -275,6 +362,7 @@ class ClusterService {
   }
 
   async makeLocalStandby() {
+    state.localPromotionRequested = false;
     state.role = ROLE_STANDBY;
     await ngrokService.stopTunnel();
     state.publicUrl = null;
@@ -346,6 +434,7 @@ class ClusterService {
 
     let targetResult = null;
     if (targetUrl === state.serverUrl) {
+      this.requestLocalPromotion();
       targetResult = await this.makeLocalHost();
     } else {
       try {
@@ -370,6 +459,7 @@ class ClusterService {
         this.setClusterMode(CLUSTER_MODE_NORMAL);
         await this.broadcastClusterMode(CLUSTER_MODE_NORMAL);
 
+        this.requestLocalPromotion();
         const fallbackHost = await this.makeLocalHost();
         const status = await this.getKnownServersWithStatus();
         return {
@@ -410,7 +500,7 @@ class ClusterService {
     }
 
     const firstSnapshot = await this.getKnownServersWithStatus();
-    const firstHost = this.findActiveHost(firstSnapshot);
+    const firstHost = await this.findValidActiveHost(firstSnapshot);
 
     if (firstHost) {
       if (firstHost.serverUrl !== state.serverUrl && state.role === ROLE_HOST) {
@@ -419,11 +509,23 @@ class ClusterService {
       return firstHost;
     }
 
+    const domainCooldownActive = state.lastDomainBusyAt && (Date.now() - state.lastDomainBusyAt) < env.publicUrlCheckIntervalMs;
+    if (domainCooldownActive) {
+      return null;
+    }
+
+    const publicUrlAvailable = await this.checkPublicUrlAvailable();
+    if (!publicUrlAvailable) {
+      state.lastDomainBusyAt = Date.now();
+      console.log('[cluster] Domínio público já está em uso. Mantendo STANDBY.');
+      return null;
+    }
+
     const winnerFirstPass = this.pickElectionWinner(firstSnapshot, excludedUrls);
     if (!winnerFirstPass) return null;
 
     const secondSnapshot = await this.getKnownServersWithStatus();
-    const secondHost = this.findActiveHost(secondSnapshot);
+    const secondHost = await this.findValidActiveHost(secondSnapshot);
     if (secondHost) {
       if (secondHost.serverUrl !== state.serverUrl && state.role === ROLE_HOST) {
         await this.makeLocalStandby();
@@ -437,6 +539,7 @@ class ClusterService {
     }
 
     if (winnerSecondPass.serverUrl === state.serverUrl) {
+      this.requestLocalPromotion();
       const localHostResult = await this.makeLocalHost();
       if (localHostResult.ok) {
         return this.findActiveHost(await this.getKnownServersWithStatus());
