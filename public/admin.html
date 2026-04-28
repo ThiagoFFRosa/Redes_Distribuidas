@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin - Cluster</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>Cluster</h2>
+        <nav><a class="active" href="#">Servers</a></nav>
+        <button id="logoutBtn" class="danger">Logout</button>
+      </aside>
+      <main class="content">
+        <header class="topbar">
+          <h1>Servers</h1>
+          <button id="refreshBtn">Atualizar</button>
+        </header>
+
+        <section id="summary" class="summary-grid"></section>
+        <p id="statusMsg"></p>
+
+        <section>
+          <table>
+            <thead>
+              <tr>
+                <th>Servidor</th>
+                <th>URL Tailscale</th>
+                <th>Status</th>
+                <th>Role</th>
+                <th>URL pública</th>
+                <th>Hospedando frontend público</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="serversBody"></tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/admin.js"></script>
+  </body>
+</html>
