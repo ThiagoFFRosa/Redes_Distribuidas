@@ -31,5 +31,6 @@ module.exports = {
   heartbeatTimeoutMs: parseNumber(process.env.HEARTBEAT_TIMEOUT_MS, 9000),
   enableNgrok: parseBoolean(process.env.ENABLE_NGROK, true),
   ngrokAuthtoken: process.env.NGROK_AUTHTOKEN || '',
-  ngrokRegion: process.env.NGROK_REGION || 'sa'
+  ngrokRegion: process.env.NGROK_REGION || 'sa',
+  ngrokDomain: (process.env.NGROK_DOMAIN || '').trim()
 };

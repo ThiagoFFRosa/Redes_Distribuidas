@@ -19,21 +19,31 @@ class NgrokService {
     }
 
     try {
-      if (env.ngrokAuthtoken) {
-        await ngrok.authtoken(env.ngrokAuthtoken);
+      const options = {
+        addr: port,
+        proto: 'http',
+        authtoken: env.ngrokAuthtoken || undefined
+      };
+
+      if (env.ngrokDomain) {
+        options.domain = env.ngrokDomain;
+      } else {
+        options.region = env.ngrokRegion;
       }
 
-      const url = await ngrok.connect({
-        addr: port,
-        region: env.ngrokRegion,
-        proto: 'http'
-      });
+      const url = await ngrok.connect(options);
 
       this.publicUrl = url;
       this.running = true;
       return this.publicUrl;
     } catch (error) {
-      console.error('[ngrok] erro ao iniciar túnel:', error.message);
+      const message = error?.message || 'erro desconhecido';
+      if (env.ngrokDomain && /domain|already in use|in use|ERR_NGROK_/i.test(message)) {
+        console.warn(`[ngrok] domínio fixo indisponível (${env.ngrokDomain}): ${message}`);
+      } else {
+        console.error('[ngrok] erro ao iniciar túnel:', message);
+      }
+
       this.publicUrl = null;
       this.running = false;
       return null;
