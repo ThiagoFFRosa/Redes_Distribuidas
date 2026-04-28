@@ -23,6 +23,8 @@ module.exports = {
   serverName: process.env.SERVER_NAME || 'server_a',
   serverUrl: process.env.SERVER_URL || 'http://127.0.0.1:3000',
   peers,
+  clusterKey: (process.env.CLUSTER_KEY || '').trim(),
+  clusterNodesFile: (process.env.CLUSTER_NODES_FILE || 'cluster-nodes.json').trim(),
   initialRole: (process.env.INITIAL_ROLE || 'STANDBY').toUpperCase() === 'HOST' ? 'HOST' : 'STANDBY',
   adminUser: process.env.ADMIN_USER || 'admin',
   adminPassword: process.env.ADMIN_PASSWORD || 'admin123',

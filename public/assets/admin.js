@@ -3,6 +3,10 @@ const summary = document.getElementById('summary');
 const statusMsg = document.getElementById('statusMsg');
 const refreshBtn = document.getElementById('refreshBtn');
 const logoutBtn = document.getElementById('logoutBtn');
+const newServerUrlInput = document.getElementById('newServerUrl');
+const testConnectionBtn = document.getElementById('testConnectionBtn');
+const registerServerBtn = document.getElementById('registerServerBtn');
+const registerMsg = document.getElementById('registerMsg');
 
 let polling = null;
 
@@ -11,10 +15,20 @@ const showMessage = (message, isError = false) => {
   statusMsg.className = isError ? 'error' : 'success';
 };
 
+const showRegisterMessage = (message, isError = false) => {
+  registerMsg.textContent = message;
+  registerMsg.className = isError ? 'error' : 'success';
+};
+
 const badgeClass = (server) => {
   if (!server.online) return 'badge offline';
   if (server.role === 'HOST') return 'badge host';
   return 'badge standby';
+};
+
+const formatLastSeen = (lastSeen) => {
+  if (!lastSeen) return '-';
+  return new Date(lastSeen).toLocaleString('pt-BR');
 };
 
 const renderSummary = (data) => {
@@ -58,6 +72,7 @@ const renderServers = (servers) => {
           <td><span class="${server.online ? 'badge online' : 'badge offline'}">${server.online ? 'ONLINE' : 'OFFLINE'}</span></td>
           <td><span class="${badgeClass(server)}">${server.role}</span></td>
           <td>${server.publicUrl || '-'}</td>
+          <td>${formatLastSeen(server.lastSeen)}</td>
           <td>${server.isHostingPublicFrontend ? '<span class="badge host">SIM</span>' : 'NÃO'}</td>
           <td><button class="switch-btn" data-url="${server.serverUrl}" ${disabled}>Tornar HOST</button></td>
         </tr>
@@ -114,7 +129,68 @@ const switchHost = async (targetUrl) => {
   }
 };
 
+const getServerUrlInput = () => newServerUrlInput.value.trim();
+
+const testConnection = async () => {
+  const serverUrl = getServerUrlInput();
+  if (!serverUrl) {
+    showRegisterMessage('Informe a URL do servidor.', true);
+    return;
+  }
+
+  testConnectionBtn.disabled = true;
+  try {
+    const response = await fetch('/api/servers/test-connection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverUrl })
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || 'Servidor não respondeu ou chave do cluster inválida');
+    }
+
+    showRegisterMessage(`Conexão válida: ${data.serverName} (${data.role}) - ${data.serverUrl}`);
+  } catch (error) {
+    showRegisterMessage(error.message || 'Falha ao testar conexão.', true);
+  } finally {
+    testConnectionBtn.disabled = false;
+  }
+};
+
+const registerServer = async () => {
+  const serverUrl = getServerUrlInput();
+  if (!serverUrl) {
+    showRegisterMessage('Informe a URL do servidor.', true);
+    return;
+  }
+
+  registerServerBtn.disabled = true;
+  try {
+    const response = await fetch('/api/servers/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverUrl })
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message || 'Falha ao cadastrar servidor.');
+    }
+
+    showRegisterMessage(data.message || 'Servidor cadastrado com sucesso.');
+    await loadServers(true);
+  } catch (error) {
+    showRegisterMessage(error.message || 'Falha ao cadastrar servidor.', true);
+  } finally {
+    registerServerBtn.disabled = false;
+  }
+};
+
 refreshBtn.addEventListener('click', () => loadServers());
+testConnectionBtn.addEventListener('click', testConnection);
+registerServerBtn.addEventListener('click', registerServer);
 
 logoutBtn.addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' });
