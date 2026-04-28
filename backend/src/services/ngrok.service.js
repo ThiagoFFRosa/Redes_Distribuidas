@@ -87,6 +87,23 @@ class NgrokService {
     return null;
   }
 
+  async startTunnelWithRetry(port, options = {}) {
+    const maxAttempts = Number.isFinite(options.maxAttempts) ? options.maxAttempts : 3;
+    const retryDelayMs = Number.isFinite(options.retryDelayMs) ? options.retryDelayMs : 5000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const url = await this.startTunnel(port);
+      if (url) return url;
+
+      if (attempt < maxAttempts) {
+        console.warn(`[ngrok] tentativa ${attempt} falhou. Nova tentativa em ${retryDelayMs / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+    }
+
+    throw new Error('Falha ao iniciar ngrok após 3 tentativas');
+  }
+
   async stopTunnel() {
     if (!env.enableNgrok) {
       this.publicUrl = null;

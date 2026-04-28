@@ -148,8 +148,12 @@ router.post('/switch-host', async (req, res) => {
   }
 
   try {
-    await clusterService.switchHost(targetUrl);
-    return res.json(await formatServersResponse());
+    const result = await clusterService.switchHost(targetUrl);
+    const response = await formatServersResponse();
+    return res.json({
+      ...response,
+      switchHost: result
+    });
   } catch (error) {
     return res.status(400).json({ message: error.message });
   }
