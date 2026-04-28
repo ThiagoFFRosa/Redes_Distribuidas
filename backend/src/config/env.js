@@ -13,16 +13,11 @@ const parseNumber = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const peers = (process.env.PEERS || '')
-  .split(',')
-  .map((url) => url.trim())
-  .filter(Boolean);
 
 module.exports = {
   port: parseNumber(process.env.PORT, 3000),
   serverName: process.env.SERVER_NAME || 'server_a',
   serverUrl: process.env.SERVER_URL || 'http://127.0.0.1:3000',
-  peers,
   clusterKey: (process.env.CLUSTER_KEY || '').trim(),
   clusterNodesFile: (process.env.CLUSTER_NODES_FILE || 'cluster-nodes.json').trim(),
   initialRole: (process.env.INITIAL_ROLE || 'STANDBY').toUpperCase() === 'HOST' ? 'HOST' : 'STANDBY',

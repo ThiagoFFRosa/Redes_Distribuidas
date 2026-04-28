@@ -56,21 +56,7 @@ class ClusterService {
   }
 
   loadNodes() {
-    const loadedNodes = clusterNodesService.loadOrCreateNodes();
-
-    if (env.peers.length > 0) {
-      const fallbackPeers = env.peers.map((peerUrl) => ({
-        serverName: peerUrl,
-        serverUrl: peerUrl,
-        addedAt: new Date().toISOString(),
-        lastSeen: null
-      }));
-
-      state.nodes = clusterNodesService.mergeNodes(loadedNodes, fallbackPeers);
-      clusterNodesService.saveNodes(state.nodes);
-    } else {
-      state.nodes = loadedNodes;
-    }
+    state.nodes = clusterNodesService.loadNodes();
   }
 
   saveNodes() {
@@ -132,6 +118,12 @@ class ClusterService {
 
   mergeAndReplaceNodes(nodes) {
     state.nodes = clusterNodesService.mergeNodes(state.nodes, nodes || []);
+    this.saveNodes();
+    return this.getNodes();
+  }
+
+  cleanupNodes() {
+    state.nodes = clusterNodesService.cleanupNodes(state.nodes);
     this.saveNodes();
     return this.getNodes();
   }

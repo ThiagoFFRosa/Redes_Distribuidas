@@ -1,6 +1,7 @@
 const express = require('express');
 const env = require('../config/env');
 const clusterService = require('../services/cluster.service');
+const clusterNodesService = require('../services/cluster-nodes.service');
 
 const router = express.Router();
 
@@ -63,6 +64,13 @@ router.post('/test-connection', async (req, res) => {
     return res.status(400).json({ message: 'serverUrl é obrigatório.' });
   }
 
+  if (!clusterNodesService.isValidClusterUrl(serverUrl)) {
+    return res.status(400).json({
+      ok: false,
+      message: clusterNodesService.getInvalidClusterUrlMessage()
+    });
+  }
+
   try {
     const handshake = await callHandshake(serverUrl);
     return res.json({
@@ -88,8 +96,23 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ message: 'serverUrl é obrigatório.' });
   }
 
+  if (!clusterNodesService.isValidClusterUrl(serverUrl)) {
+    return res.status(400).json({
+      ok: false,
+      message: clusterNodesService.getInvalidClusterUrlMessage()
+    });
+  }
+
   try {
     const handshake = await callHandshake(serverUrl);
+
+    if (!clusterNodesService.isValidClusterUrl(handshake.serverUrl)) {
+      return res.status(400).json({
+        ok: false,
+        message: clusterNodesService.getInvalidClusterUrlMessage()
+      });
+    }
+
     const newNode = clusterService.upsertNode({
       serverName: handshake.serverName,
       serverUrl: handshake.serverUrl,
@@ -139,6 +162,18 @@ router.post('/register', async (req, res) => {
       message: 'Servidor não respondeu ou chave do cluster inválida'
     });
   }
+});
+
+router.post('/cleanup', async (req, res) => {
+  const cleanedNodes = clusterService.cleanupNodes();
+  const response = await formatServersResponse();
+
+  return res.json({
+    ok: true,
+    message: 'Lista de nós limpa com sucesso.',
+    nodes: cleanedNodes,
+    ...response
+  });
 });
 
 router.post('/switch-host', async (req, res) => {
