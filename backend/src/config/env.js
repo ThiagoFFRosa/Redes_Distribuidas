@@ -26,6 +26,7 @@ module.exports = {
   sessionSecret: process.env.SESSION_SECRET || 'dev-secret',
   heartbeatIntervalMs: parseNumber(process.env.HEARTBEAT_INTERVAL_MS, 3000),
   heartbeatTimeoutMs: parseNumber(process.env.HEARTBEAT_TIMEOUT_MS, 9000),
+  switchFallbackDelayMs: parseNumber(process.env.SWITCH_FALLBACK_DELAY_MS, 15000),
   enableNgrok: parseBoolean(process.env.ENABLE_NGROK, true),
   ngrokAuthtoken: process.env.NGROK_AUTHTOKEN || '',
   ngrokRegion: process.env.NGROK_REGION || 'sa',

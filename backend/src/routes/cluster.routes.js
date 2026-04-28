@@ -41,7 +41,23 @@ router.get('/handshake', (req, res) => {
     serverUrl: local.serverUrl,
     role: local.role,
     publicUrl: local.publicUrl,
+    clusterMode: local.clusterMode,
+    switchTarget: local.switchTarget,
     clusterKeyAccepted: true
+  });
+});
+
+router.post('/switch-mode', (req, res) => {
+  const { clusterMode, switchTarget } = req.body || {};
+  if (clusterMode !== 'NORMAL' && clusterMode !== 'SWITCHING') {
+    return res.status(400).json({ ok: false, message: 'clusterMode inválido.' });
+  }
+
+  clusterService.setClusterMode(clusterMode, switchTarget || null);
+  return res.json({
+    ok: true,
+    clusterMode,
+    switchTarget: switchTarget || null
   });
 });
 

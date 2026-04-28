@@ -7,6 +7,8 @@ const ROLE_STANDBY = 'STANDBY';
 const HOST_TAKEOVER_ERROR = 'Falha ao assumir HOST: domínio ngrok indisponível após 3 tentativas';
 const NO_PUBLIC_HOST_ERROR = 'Nenhum servidor conseguiu assumir o domínio público';
 const SWITCH_WAIT_BEFORE_HOST_MS = 2000;
+const CLUSTER_MODE_NORMAL = 'NORMAL';
+const CLUSTER_MODE_SWITCHING = 'SWITCHING';
 
 const withTimeout = async (url, options = {}, timeoutMs = env.heartbeatIntervalMs) => {
   const controller = new AbortController();
@@ -41,7 +43,9 @@ const state = {
   role: env.initialRole,
   publicUrl: null,
   nodes: [],
-  peerRuntime: {}
+  peerRuntime: {},
+  clusterMode: CLUSTER_MODE_NORMAL,
+  switchTarget: null
 };
 
 class ClusterService {
@@ -105,8 +109,19 @@ class ClusterService {
       serverUrl: state.serverUrl,
       role: state.role,
       publicUrl: state.publicUrl,
+      clusterMode: state.clusterMode,
+      switchTarget: state.switchTarget,
       peers: this.getKnownServers().filter((server) => server.serverUrl !== state.serverUrl)
     };
+  }
+
+  setClusterMode(clusterMode, switchTarget = null) {
+    state.clusterMode = clusterMode;
+    state.switchTarget = clusterMode === CLUSTER_MODE_SWITCHING ? switchTarget : null;
+  }
+
+  isSwitching() {
+    return state.clusterMode === CLUSTER_MODE_SWITCHING;
   }
 
   upsertNode(node) {
@@ -213,6 +228,17 @@ class ClusterService {
   }
 
   async makeLocalHost() {
+    if (this.isSwitching() && state.switchTarget !== state.serverUrl) {
+      console.warn('[cluster] Fallback bloqueado durante SWITCHING');
+      return {
+        ok: false,
+        serverName: state.serverName,
+        role: state.role,
+        publicUrl: state.publicUrl,
+        error: 'Fallback bloqueado durante SWITCHING'
+      };
+    }
+
     if (!env.enableNgrok) {
       state.role = ROLE_HOST;
       state.publicUrl = null;
@@ -272,7 +298,21 @@ class ClusterService {
     );
   }
 
+  async broadcastClusterMode(clusterMode, switchTarget = null) {
+    const peers = state.nodes.filter((node) => node.serverUrl !== state.serverUrl);
+    await Promise.all(
+      peers.map(async (peer) => {
+        try {
+          await this.tellPeer(peer.serverUrl, '/internal/switch-mode', { clusterMode, switchTarget });
+        } catch (error) {
+          console.error(`[cluster] falha ao propagar modo ${clusterMode} para ${peer.serverUrl}:`, error.message);
+        }
+      })
+    );
+  }
+
   async switchHost(targetUrl) {
+    const switchStartedAt = Date.now();
     const allServers = (await this.getKnownServersWithStatus()).filter((server) => server.serverUrl === state.serverUrl || server.online);
     const target = allServers.find((server) => server.serverUrl === targetUrl);
 
@@ -280,23 +320,29 @@ class ClusterService {
       throw new Error('Servidor alvo offline ou inexistente.');
     }
 
-    const standByTargets = allServers.filter((server) => server.serverUrl !== targetUrl);
-    await Promise.all(
-      standByTargets.map(async (server) => {
-        if (server.serverUrl === state.serverUrl) {
-          await this.makeLocalStandby();
-          return;
-        }
+    console.log(`[cluster] Troca manual iniciada: target=${target.serverName || targetUrl}`);
+    this.setClusterMode(CLUSTER_MODE_SWITCHING, targetUrl);
+    await this.broadcastClusterMode(CLUSTER_MODE_SWITCHING, targetUrl);
+    try {
 
-        try {
-          await this.tellPeer(server.serverUrl, '/internal/become-standby');
-        } catch (error) {
-          console.error(`[cluster] falha ao rebaixar ${server.serverUrl}:`, error.message);
-        }
-      })
-    );
+      const standByTargets = allServers.filter((server) => server.serverUrl !== targetUrl);
+      await Promise.all(
+        standByTargets.map(async (server) => {
+          if (server.serverUrl === state.serverUrl) {
+            await this.makeLocalStandby();
+            return;
+          }
 
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_WAIT_BEFORE_HOST_MS));
+          try {
+            await this.tellPeer(server.serverUrl, '/internal/become-standby');
+          } catch (error) {
+            console.error(`[cluster] falha ao rebaixar ${server.serverUrl}:`, error.message);
+          }
+        })
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, SWITCH_WAIT_BEFORE_HOST_MS));
+      console.log('[cluster] Host antigo aguardando target concluir tentativas');
 
     let targetResult = null;
     if (targetUrl === state.serverUrl) {
@@ -313,21 +359,39 @@ class ClusterService {
       await this.makeLocalStandby();
     }
 
-    if (!targetResult?.ok) {
-      console.error(`[cluster] falha ao promover ${targetUrl} para HOST: ${targetResult?.error || 'erro desconhecido'}`);
-      const fallbackHost = await this.electHostIfNeeded(new Set([targetUrl]));
-      const status = await this.getKnownServersWithStatus();
-      return {
-        servers: status,
-        switched: false,
-        message: fallbackHost ? HOST_TAKEOVER_ERROR : NO_PUBLIC_HOST_ERROR
-      };
-    }
+      if (!targetResult?.ok) {
+        console.error(`[cluster] falha ao promover ${targetUrl} para HOST: ${targetResult?.error || 'erro desconhecido'}`);
+        const elapsedMs = Date.now() - switchStartedAt;
+        const remainingDelayMs = Math.max(0, env.switchFallbackDelayMs - elapsedMs);
+        if (remainingDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remainingDelayMs));
+        }
+        console.log('[cluster] Target falhou, host antigo reassumindo após delay');
+        this.setClusterMode(CLUSTER_MODE_NORMAL);
+        await this.broadcastClusterMode(CLUSTER_MODE_NORMAL);
 
-    return {
-      servers: await this.getKnownServersWithStatus(),
-      switched: true
-    };
+        const fallbackHost = await this.makeLocalHost();
+        const status = await this.getKnownServersWithStatus();
+        return {
+          servers: status,
+          switched: false,
+          message: fallbackHost?.ok ? HOST_TAKEOVER_ERROR : NO_PUBLIC_HOST_ERROR
+        };
+      }
+
+      console.log('[cluster] Target assumiu com sucesso, fallback cancelado');
+      this.setClusterMode(CLUSTER_MODE_NORMAL);
+      await this.broadcastClusterMode(CLUSTER_MODE_NORMAL);
+
+      return {
+        servers: await this.getKnownServersWithStatus(),
+        switched: true
+      };
+    } catch (error) {
+      this.setClusterMode(CLUSTER_MODE_NORMAL);
+      await this.broadcastClusterMode(CLUSTER_MODE_NORMAL);
+      throw error;
+    }
   }
 
   pickElectionWinner(servers, excludedUrls = new Set()) {
@@ -340,6 +404,11 @@ class ClusterService {
   }
 
   async electHostIfNeeded(excludedUrls = new Set()) {
+    if (this.isSwitching()) {
+      console.log('[cluster] Fallback bloqueado durante SWITCHING');
+      return null;
+    }
+
     const firstSnapshot = await this.getKnownServersWithStatus();
     const firstHost = this.findActiveHost(firstSnapshot);
 
