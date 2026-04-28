@@ -19,6 +19,7 @@ const badgeClass = (server) => {
 
 const renderSummary = (data) => {
   const activeHost = data.servers.find((server) => server.online && server.role === 'HOST');
+  const activePublicUrl = activeHost?.publicUrl || null;
   summary.innerHTML = `
     <article class="card">
       <h3>Servidor atual</h3>
@@ -32,12 +33,17 @@ const renderSummary = (data) => {
     </article>
     <article class="card">
       <h3>URL pública atual</h3>
-      <p>${activeHost && activeHost.publicUrl ? activeHost.publicUrl : 'Sem ngrok ativo'}</p>
+      <p>${activePublicUrl || 'Sem ngrok ativo'}</p>
     </article>
   `;
 
   if (!activeHost) {
     showMessage('Alerta: nenhum HOST online no momento.', true);
+    return;
+  }
+
+  if (!activePublicUrl) {
+    showMessage('HOST ativo sem URL pública no momento (ngrok indisponível).', true);
   }
 };
 
