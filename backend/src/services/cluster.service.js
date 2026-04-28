@@ -1,23 +1,9 @@
 const env = require('../config/env');
 const ngrokService = require('./ngrok.service');
+const clusterNodesService = require('./cluster-nodes.service');
 
 const ROLE_HOST = 'HOST';
 const ROLE_STANDBY = 'STANDBY';
-
-const state = {
-  serverName: env.serverName,
-  serverUrl: env.serverUrl,
-  role: env.initialRole,
-  publicUrl: null,
-  peers: env.peers.map((peerUrl) => ({
-    serverName: peerUrl,
-    serverUrl: peerUrl,
-    online: false,
-    role: ROLE_STANDBY,
-    publicUrl: null,
-    lastSeen: null
-  }))
-};
 
 const withTimeout = async (url, options = {}, timeoutMs = env.heartbeatIntervalMs) => {
   const controller = new AbortController();
@@ -43,83 +29,176 @@ const withTimeout = async (url, options = {}, timeoutMs = env.heartbeatIntervalM
   }
 };
 
+const state = {
+  serverName: env.serverName,
+  serverUrl: env.serverUrl,
+  role: env.initialRole,
+  publicUrl: null,
+  nodes: [],
+  peerRuntime: {}
+};
+
 class ClusterService {
+  constructor() {
+    this.loadNodes();
+  }
+
+  getInternalHeaders() {
+    return {
+      'x-cluster-key': env.clusterKey
+    };
+  }
+
+  loadNodes() {
+    const loadedNodes = clusterNodesService.loadOrCreateNodes();
+
+    if (env.peers.length > 0) {
+      const fallbackPeers = env.peers.map((peerUrl) => ({
+        serverName: peerUrl,
+        serverUrl: peerUrl,
+        addedAt: new Date().toISOString(),
+        lastSeen: null
+      }));
+
+      state.nodes = clusterNodesService.mergeNodes(loadedNodes, fallbackPeers);
+      clusterNodesService.saveNodes(state.nodes);
+    } else {
+      state.nodes = loadedNodes;
+    }
+  }
+
+  saveNodes() {
+    state.nodes = clusterNodesService.saveNodes(state.nodes);
+  }
+
+  getNodes() {
+    return state.nodes.map((node) => ({ ...node }));
+  }
+
+  getKnownServers() {
+    const localNode = state.nodes.find((node) => node.serverUrl === state.serverUrl);
+    const local = {
+      serverName: state.serverName,
+      serverUrl: state.serverUrl,
+      addedAt: localNode?.addedAt || new Date().toISOString(),
+      lastSeen: localNode?.lastSeen || new Date().toISOString(),
+      online: true,
+      role: state.role,
+      publicUrl: state.publicUrl,
+      isHostingPublicFrontend: state.role === ROLE_HOST && Boolean(state.publicUrl)
+    };
+
+    const peers = state.nodes
+      .filter((node) => node.serverUrl !== state.serverUrl)
+      .map((node) => {
+        const runtime = state.peerRuntime[node.serverUrl] || {};
+        return {
+          serverName: node.serverName,
+          serverUrl: node.serverUrl,
+          addedAt: node.addedAt,
+          lastSeen: runtime.lastSeen || node.lastSeen || null,
+          online: runtime.online || false,
+          role: runtime.role || ROLE_STANDBY,
+          publicUrl: runtime.publicUrl || null,
+          isHostingPublicFrontend: runtime.role === ROLE_HOST && Boolean(runtime.publicUrl)
+        };
+      });
+
+    return [local, ...peers];
+  }
+
   getLocalState() {
     return {
       serverName: state.serverName,
       serverUrl: state.serverUrl,
       role: state.role,
       publicUrl: state.publicUrl,
-      peers: state.peers
+      peers: this.getKnownServers().filter((server) => server.serverUrl !== state.serverUrl)
     };
   }
 
-  getKnownServers() {
-    const local = {
-      serverName: state.serverName,
-      serverUrl: state.serverUrl,
-      online: true,
-      role: state.role,
-      publicUrl: state.publicUrl,
-      isHostingPublicFrontend: state.role === ROLE_HOST && Boolean(state.publicUrl),
-      lastSeen: new Date().toISOString()
-    };
-
-    return [local, ...state.peers.map((peer) => ({
-      ...peer,
-      isHostingPublicFrontend: peer.role === ROLE_HOST && Boolean(peer.publicUrl)
-    }))];
+  upsertNode(node) {
+    const merged = clusterNodesService.mergeNodes(state.nodes, [node]);
+    state.nodes = merged;
+    this.saveNodes();
+    return this.getNodes().find((item) => item.serverUrl === node.serverUrl || item.serverName === node.serverName) || null;
   }
 
-  updatePeer(peerUrl, data) {
-    const peer = state.peers.find((p) => p.serverUrl === peerUrl);
-    if (!peer) return;
-
-    peer.serverName = data.serverName || peer.serverName;
-    peer.serverUrl = data.serverUrl || peer.serverUrl;
-    peer.role = data.role || ROLE_STANDBY;
-    peer.publicUrl = data.publicUrl || null;
-    peer.online = true;
-    peer.lastSeen = data.time || new Date().toISOString();
+  mergeAndReplaceNodes(nodes) {
+    state.nodes = clusterNodesService.mergeNodes(state.nodes, nodes || []);
+    this.saveNodes();
+    return this.getNodes();
   }
 
-  markPeerOffline(peerUrl) {
-    const peer = state.peers.find((p) => p.serverUrl === peerUrl);
-    if (!peer) return;
+  async pingNode(node) {
+    try {
+      const handshake = await withTimeout(
+        `${node.serverUrl}/internal/handshake`,
+        { headers: this.getInternalHeaders() },
+        env.heartbeatIntervalMs
+      );
 
-    const last = peer.lastSeen ? new Date(peer.lastSeen).getTime() : 0;
-    if (!last || Date.now() - last >= env.heartbeatTimeoutMs) {
-      peer.online = false;
-      peer.role = ROLE_STANDBY;
-      peer.publicUrl = null;
+      const lastSeen = new Date().toISOString();
+      this.upsertNode({
+        serverName: handshake.serverName,
+        serverUrl: handshake.serverUrl,
+        addedAt: node.addedAt,
+        lastSeen
+      });
+
+      return {
+        serverName: handshake.serverName,
+        serverUrl: handshake.serverUrl,
+        addedAt: node.addedAt,
+        lastSeen,
+        online: true,
+        role: handshake.role || ROLE_STANDBY,
+        publicUrl: handshake.publicUrl || null,
+        isHostingPublicFrontend: handshake.role === ROLE_HOST && Boolean(handshake.publicUrl)
+      };
+    } catch (_error) {
+      const last = node.lastSeen ? new Date(node.lastSeen).getTime() : 0;
+      const stillOnline = Boolean(last && Date.now() - last < env.heartbeatTimeoutMs);
+
+      return {
+        serverName: node.serverName,
+        serverUrl: node.serverUrl,
+        addedAt: node.addedAt,
+        lastSeen: node.lastSeen || null,
+        online: stillOnline,
+        role: ROLE_STANDBY,
+        publicUrl: null,
+        isHostingPublicFrontend: false
+      };
     }
   }
 
   async refreshPeers() {
-    await Promise.all(
-      env.peers.map(async (peerUrl) => {
-        try {
-          const health = await withTimeout(`${peerUrl}/internal/health`, {}, env.heartbeatIntervalMs);
-          this.updatePeer(peerUrl, health);
-        } catch (_error) {
-          this.markPeerOffline(peerUrl);
-        }
-      })
-    );
-  }
+    const peers = state.nodes.filter((node) => node.serverUrl !== state.serverUrl);
+    const peerStates = await Promise.all(peers.map((node) => this.pingNode(node)));
 
-  findActiveHost() {
-    if (state.role === ROLE_HOST) {
-      return {
-        serverName: state.serverName,
-        serverUrl: state.serverUrl,
-        role: state.role,
-        publicUrl: state.publicUrl,
-        online: true
+    const nextRuntime = {};
+    for (const peer of peerStates) {
+      nextRuntime[peer.serverUrl] = {
+        online: peer.online,
+        role: peer.role,
+        publicUrl: peer.publicUrl,
+        lastSeen: peer.lastSeen
       };
     }
 
-    return state.peers.find((peer) => peer.online && peer.role === ROLE_HOST) || null;
+    state.peerRuntime = nextRuntime;
+    return peerStates;
+  }
+
+  async getKnownServersWithStatus() {
+    await this.refreshPeers();
+    return this.getKnownServers();
+  }
+
+  findActiveHost(servers = []) {
+    const known = servers.length ? servers : this.getKnownServers();
+    return known.find((server) => server.online && server.role === ROLE_HOST) || null;
   }
 
   async setRole(role) {
@@ -145,12 +224,20 @@ class ClusterService {
     return this.getLocalState();
   }
 
-  async tellPeer(peerUrl, path) {
-    return withTimeout(`${peerUrl}${path}`, { method: 'POST' }, env.heartbeatIntervalMs);
+  async tellPeer(peerUrl, path, body = undefined) {
+    return withTimeout(
+      `${peerUrl}${path}`,
+      {
+        method: 'POST',
+        headers: this.getInternalHeaders(),
+        body: body ? JSON.stringify(body) : undefined
+      },
+      env.heartbeatIntervalMs
+    );
   }
 
   async switchHost(targetUrl) {
-    const allServers = this.getKnownServers().filter((s) => s.serverUrl === state.serverUrl || s.online);
+    const allServers = (await this.getKnownServersWithStatus()).filter((server) => server.serverUrl === state.serverUrl || server.online);
     const target = allServers.find((server) => server.serverUrl === targetUrl);
 
     if (!target) {
@@ -180,47 +267,56 @@ class ClusterService {
       await this.makeLocalStandby();
     }
 
-    await this.refreshPeers();
-    return this.getKnownServers();
+    return this.getKnownServersWithStatus();
+  }
+
+  pickElectionWinner(servers) {
+    const online = servers
+      .filter((server) => server.online)
+      .map((server) => ({ serverName: server.serverName, serverUrl: server.serverUrl }))
+      .sort((a, b) => a.serverName.localeCompare(b.serverName));
+
+    return online[0] || null;
   }
 
   async electHostIfNeeded() {
-    await this.refreshPeers();
+    const firstSnapshot = await this.getKnownServersWithStatus();
+    const firstHost = this.findActiveHost(firstSnapshot);
 
-    const existingHost = this.findActiveHost();
-    if (existingHost) {
-      if (existingHost.serverUrl !== state.serverUrl && state.role === ROLE_HOST) {
+    if (firstHost) {
+      if (firstHost.serverUrl !== state.serverUrl && state.role === ROLE_HOST) {
         await this.makeLocalStandby();
       }
-      return existingHost;
+      return firstHost;
     }
 
-    const candidates = [
-      { serverName: state.serverName, serverUrl: state.serverUrl, online: true },
-      ...state.peers.filter((peer) => peer.online).map((peer) => ({
-        serverName: peer.serverName,
-        serverUrl: peer.serverUrl,
-        online: true
-      }))
-    ].sort((a, b) => a.serverName.localeCompare(b.serverName));
+    const winnerFirstPass = this.pickElectionWinner(firstSnapshot);
+    if (!winnerFirstPass) return null;
 
-    const winner = candidates[0];
-    if (!winner) return null;
-
-    if (winner.serverUrl === state.serverUrl) {
-      await this.makeLocalHost();
-      return this.findActiveHost();
+    const secondSnapshot = await this.getKnownServersWithStatus();
+    const secondHost = this.findActiveHost(secondSnapshot);
+    if (secondHost) {
+      if (secondHost.serverUrl !== state.serverUrl && state.role === ROLE_HOST) {
+        await this.makeLocalStandby();
+      }
+      return secondHost;
     }
 
-    try {
-      await this.tellPeer(winner.serverUrl, '/internal/become-host');
-      await this.makeLocalStandby();
-      await this.refreshPeers();
-      return this.findActiveHost();
-    } catch (error) {
-      console.error('[cluster] falha ao promover vencedor da eleição:', error.message);
+    const winnerSecondPass = this.pickElectionWinner(secondSnapshot);
+    if (!winnerSecondPass || winnerSecondPass.serverUrl !== winnerFirstPass.serverUrl) {
       return null;
     }
+
+    if (winnerSecondPass.serverUrl === state.serverUrl) {
+      await this.makeLocalHost();
+      return this.findActiveHost(await this.getKnownServersWithStatus());
+    }
+
+    if (state.role === ROLE_HOST) {
+      await this.makeLocalStandby();
+    }
+
+    return winnerSecondPass;
   }
 }
 

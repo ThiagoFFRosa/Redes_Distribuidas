@@ -1,0 +1,10 @@
+{
+  "nodes": [
+    {
+      "serverName": "server_a",
+      "serverUrl": "http://127.0.0.1:3000",
+      "addedAt": "2026-04-28T14:49:34.714Z",
+      "lastSeen": null
+    }
+  ]
+}

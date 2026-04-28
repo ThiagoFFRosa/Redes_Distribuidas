@@ -97,3 +97,13 @@ th, td { padding: .8rem; border-bottom: 1px solid #293149; text-align: left; fon
 
 .error { color: #ff9fb0; }
 .success { color: #9cf7ba; }
+
+.register-card {
+  margin-bottom: 1rem;
+}
+
+.actions-row {
+  display: flex;
+  gap: .6rem;
+  margin-top: .5rem;
+}

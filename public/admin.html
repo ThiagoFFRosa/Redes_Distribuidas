@@ -22,6 +22,19 @@
         <section id="summary" class="summary-grid"></section>
         <p id="statusMsg"></p>
 
+        <section class="card register-card">
+          <h3>Cadastrar novo servidor</h3>
+          <label>
+            URL Tailscale do servidor
+            <input id="newServerUrl" type="url" placeholder="http://100.x.x.x:3000" />
+          </label>
+          <div class="actions-row">
+            <button id="testConnectionBtn" type="button">Testar conexão</button>
+            <button id="registerServerBtn" type="button">Cadastrar servidor</button>
+          </div>
+          <p id="registerMsg"></p>
+        </section>
+
         <section>
           <table>
             <thead>
@@ -31,6 +44,7 @@
                 <th>Status</th>
                 <th>Role</th>
                 <th>URL pública</th>
+                <th>Último seen</th>
                 <th>Hospedando frontend público</th>
                 <th>Ações</th>
               </tr>
