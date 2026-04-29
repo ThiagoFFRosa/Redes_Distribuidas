@@ -107,3 +107,9 @@ th, td { padding: .8rem; border-bottom: 1px solid #293149; text-align: left; fon
   gap: .6rem;
   margin-top: .5rem;
 }
+
+.sidebar a.active { outline: 1px solid var(--accent); }
+.hidden { display: none; }
+.inmet-result { margin-top: .8rem; }
+.inmet-useful { border-color: var(--host); box-shadow: 0 0 0 1px color-mix(in srgb, var(--host) 50%, transparent) inset; }
+pre { white-space: pre-wrap; background: #0d1422; padding: .7rem; border-radius: 8px; border: 1px solid #2a3348; }
