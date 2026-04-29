@@ -7,7 +7,8 @@ const buildEndpoints = ({ stationCode, date }) => [
   `https://apitempo.inmet.gov.br/estacoes/dados/${date}`,
   `https://apitempo.inmet.gov.br/estacoes/T/${date}`,
   `https://apitempo.inmet.gov.br/estacoes/${stationCode}/${date}`,
-  `https://apitempo.inmet.gov.br/estacao/${date}/${stationCode}`
+  `https://apitempo.inmet.gov.br/estacao/${date}/${stationCode}`,
+  'http://www.inmet.gov.br/projetos/rede/pesquisa/inicio.php'
 ];
 
 const isJsonContentType = (contentType) => Boolean(contentType && contentType.toLowerCase().includes('application/json'));
