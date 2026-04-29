@@ -10,10 +10,14 @@
     <div class="layout">
       <aside class="sidebar">
         <h2>Cluster</h2>
-        <nav><a class="active" href="#">Servers</a></nav>
+        <nav>
+          <a class="active" href="#" data-view="servers">Servers</a>
+          <a href="#" data-view="inmet">INMET Testes</a>
+        </nav>
         <button id="logoutBtn" class="danger">Logout</button>
       </aside>
-      <main class="content">
+            <main class="content">
+        <section id="view-servers">
         <header class="topbar">
           <h1>Servers</h1>
           <div class="actions-row">
@@ -54,6 +58,22 @@
             </thead>
             <tbody id="serversBody"></tbody>
           </table>
+        </section>
+        </section>
+
+        <section id="view-inmet" class="hidden">
+          <header class="topbar">
+            <h1>Testes INMET</h1>
+          </header>
+          <section class="card">
+            <div class="actions-row">
+              <label>Código da Estação<input id="inmetStation" type="text" value="A769" /></label>
+              <label>Data<input id="inmetDate" type="date" /></label>
+            </div>
+            <div class="actions-row"><button id="runInmetTestBtn" type="button">Executar teste</button></div>
+            <p id="inmetStatusMsg"></p>
+            <div id="inmetResults"></div>
+          </section>
         </section>
       </main>
     </div>
