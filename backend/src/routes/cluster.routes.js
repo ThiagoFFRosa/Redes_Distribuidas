@@ -59,16 +59,17 @@ router.get('/handshake', (req, res) => {
 });
 
 router.post('/switch-mode', (req, res) => {
-  const { clusterMode, switchTarget } = req.body || {};
+  const { clusterMode, switchTarget, oldHostUrl } = req.body || {};
   if (clusterMode !== 'NORMAL' && clusterMode !== 'SWITCHING') {
     return res.status(400).json({ ok: false, message: 'clusterMode inválido.' });
   }
 
-  clusterService.setClusterMode(clusterMode, switchTarget || null);
+  clusterService.setClusterMode(clusterMode, switchTarget || null, oldHostUrl || null);
   return res.json({
     ok: true,
     clusterMode,
-    switchTarget: switchTarget || null
+    switchTarget: switchTarget || null,
+    oldHostUrl: oldHostUrl || null
   });
 });
 
@@ -137,6 +138,21 @@ router.post('/become-host', async (req, res) => {
     role: 'STANDBY',
     publicUrl: null,
     error: 'Falha ao iniciar ngrok após 3 tentativas'
+  });
+});
+
+router.post('/promote', async (req, res) => {
+  const data = await clusterService.promoteToHostManually(req.body || {});
+  if (data.ok) {
+    return res.json(data);
+  }
+
+  return res.status(503).json({
+    ok: false,
+    serverName: data.serverName,
+    role: 'STANDBY',
+    publicUrl: null,
+    error: data.error || 'Falha ao iniciar ngrok após 3 tentativas'
   });
 });
 

@@ -7,8 +7,11 @@ const ROLE_STANDBY = 'STANDBY';
 const HOST_TAKEOVER_ERROR = 'Falha ao assumir HOST: domínio ngrok indisponível após 3 tentativas';
 const NO_PUBLIC_HOST_ERROR = 'Nenhum servidor conseguiu assumir o domínio público';
 const SWITCH_WAIT_BEFORE_HOST_MS = 2000;
+const SWITCH_PROMOTE_TIMEOUT_MS = 20000;
+const SWITCH_DOMAIN_RELEASE_GRACE_MS = 1200;
 const CLUSTER_MODE_NORMAL = 'NORMAL';
 const CLUSTER_MODE_SWITCHING = 'SWITCHING';
+const CLUSTER_MODE_SWITCH_TARGET = 'SWITCH_TARGET';
 
 const withTimeout = async (url, options = {}, timeoutMs = env.heartbeatIntervalMs) => {
   const controller = new AbortController();
@@ -46,8 +49,11 @@ const state = {
   peerRuntime: {},
   clusterMode: CLUSTER_MODE_NORMAL,
   switchTarget: null,
+  switchOldHost: null,
   lastDomainBusyAt: 0,
-  localPromotionRequested: false
+  localPromotionRequested: false,
+  autoFallbackBlocked: false,
+  allowManualPromotion: false
 };
 
 class ClusterService {
@@ -117,9 +123,26 @@ class ClusterService {
     };
   }
 
-  setClusterMode(clusterMode, switchTarget = null) {
+  setClusterMode(clusterMode, switchTarget = null, oldHostUrl = null) {
     state.clusterMode = clusterMode;
     state.switchTarget = clusterMode === CLUSTER_MODE_SWITCHING ? switchTarget : null;
+    state.switchOldHost = clusterMode === CLUSTER_MODE_SWITCHING ? oldHostUrl : null;
+
+    if (clusterMode === CLUSTER_MODE_SWITCHING) {
+      if (switchTarget === state.serverUrl) {
+        state.autoFallbackBlocked = false;
+        state.allowManualPromotion = true;
+        console.log(`[cluster] SWITCHING recebido: target=${switchTarget}, self=${state.serverUrl}, modo=${CLUSTER_MODE_SWITCH_TARGET}`);
+      } else {
+        state.autoFallbackBlocked = true;
+        state.allowManualPromotion = false;
+        console.log(`[cluster] SWITCHING recebido: target=${switchTarget}, self=${state.serverUrl}, modo=${CLUSTER_MODE_SWITCHING}`);
+      }
+      return;
+    }
+
+    state.autoFallbackBlocked = false;
+    state.allowManualPromotion = false;
   }
 
   isSwitching() {
@@ -321,15 +344,16 @@ class ClusterService {
     return this.getLocalState();
   }
 
-  async makeLocalHost() {
+  async makeLocalHost(options = {}) {
     state.localPromotionRequested = Boolean(state.localPromotionRequested || state.role === ROLE_HOST);
-    if (!state.localPromotionRequested && state.role !== ROLE_HOST) {
+    if (!options.manualPromotion && !state.localPromotionRequested && state.role !== ROLE_HOST) {
       return { ok: false, serverName: state.serverName, role: state.role, publicUrl: state.publicUrl, error: 'Promoção local não autorizada neste ciclo' };
     }
 
-    if (this.isSwitching() && state.switchTarget !== state.serverUrl) {
+    if (!options?.manualPromotion && this.isSwitching() && state.switchTarget !== state.serverUrl) {
       console.warn('[cluster] Fallback bloqueado durante SWITCHING');
       state.localPromotionRequested = false;
+      state.allowManualPromotion = false;
       return {
         ok: false,
         serverName: state.serverName,
@@ -343,6 +367,7 @@ class ClusterService {
       state.role = ROLE_HOST;
       state.publicUrl = null;
       state.localPromotionRequested = false;
+      state.allowManualPromotion = false;
       return {
         ok: true,
         serverName: state.serverName,
@@ -352,19 +377,33 @@ class ClusterService {
     }
 
     try {
+      if (options.manualPromotion) {
+        console.log('[cluster] promoção manual recebida, ignorando fallback automático');
+        console.log('[cluster] aguardando domínio liberar...');
+        await new Promise((resolve) => setTimeout(resolve, SWITCH_DOMAIN_RELEASE_GRACE_MS));
+      }
+
       const urlAvailable = await this.checkPublicUrlAvailable();
-      if (!urlAvailable) {
+      if (!urlAvailable && !options.manualPromotion) {
         state.role = ROLE_STANDBY;
         state.publicUrl = null;
         state.lastDomainBusyAt = Date.now();
         return { ok: false, serverName: state.serverName, role: state.role, publicUrl: null, error: 'Domínio público em uso. Promoção cancelada.' };
       }
 
-      console.log('[cluster] Domínio público livre');
+      if (!urlAvailable && options.manualPromotion) {
+        console.log('[cluster] domínio ainda ocupado durante promoção manual, tentando iniciar ngrok com retry');
+      } else {
+        console.log('[cluster] Domínio público livre');
+      }
       const publicUrl = await ngrokService.startTunnelWithRetry(env.port);
       state.role = ROLE_HOST;
       state.publicUrl = publicUrl;
       state.localPromotionRequested = false;
+      state.allowManualPromotion = false;
+      if (options.manualPromotion) {
+        console.log('[cluster] target iniciou ngrok com sucesso');
+      }
       return {
         ok: true,
         serverName: state.serverName,
@@ -376,6 +415,7 @@ class ClusterService {
       state.publicUrl = null;
       console.error(`[cluster] ${HOST_TAKEOVER_ERROR}`);
       state.localPromotionRequested = false;
+      state.allowManualPromotion = false;
       return {
         ok: false,
         serverName: state.serverName,
@@ -384,6 +424,17 @@ class ClusterService {
         error: error?.message || 'Falha ao iniciar ngrok após 3 tentativas'
       };
     }
+  }
+
+
+  async promoteToHostManually(payload = {}) {
+    const targetUrl = payload.targetUrl;
+    if (!targetUrl || targetUrl !== state.serverUrl) {
+      return { ok: false, error: `Target inválido para promoção manual: recebido=${targetUrl || 'vazio'} self=${state.serverUrl}` };
+    }
+
+    state.allowManualPromotion = true;
+    return this.makeLocalHost({ manualPromotion: true });
   }
 
   async makeLocalStandby() {
@@ -399,7 +450,7 @@ class ClusterService {
     };
   }
 
-  async tellPeer(peerUrl, path, body = undefined) {
+  async tellPeer(peerUrl, path, body = undefined, timeoutMs = env.heartbeatIntervalMs) {
     return withTimeout(
       `${peerUrl}${path}`,
       {
@@ -407,18 +458,18 @@ class ClusterService {
         headers: this.getInternalHeaders(),
         body: body ? JSON.stringify(body) : undefined
       },
-      env.heartbeatIntervalMs
+      timeoutMs
     );
   }
 
-  async broadcastClusterMode(clusterMode, switchTarget = null) {
+  async broadcastClusterMode(clusterMode, switchTarget = null, oldHostUrl = null) {
     const peers = state.nodes.filter((node) => node.serverUrl !== state.serverUrl);
     await Promise.all(
       peers.map(async (peer) => {
         try {
-          await this.tellPeer(peer.serverUrl, '/internal/switch-mode', { clusterMode, switchTarget });
+          await this.tellPeer(peer.serverUrl, '/internal/switch-mode', { clusterMode, switchTarget, oldHostUrl });
         } catch (error) {
-          console.error(`[cluster] falha ao propagar modo ${clusterMode} para ${peer.serverUrl}:`, error.message);
+          console.error(`[cluster] falha ao propagar modo ${clusterMode} para ${peer.serverUrl}: ${error.name || 'Error'} ${error.message}`);
         }
       })
     );
@@ -434,15 +485,16 @@ class ClusterService {
     }
 
     console.log(`[cluster] Troca manual iniciada: target=${target.serverName || targetUrl}`);
-    this.setClusterMode(CLUSTER_MODE_SWITCHING, targetUrl);
-    await this.broadcastClusterMode(CLUSTER_MODE_SWITCHING, targetUrl);
+    this.setClusterMode(CLUSTER_MODE_SWITCHING, targetUrl, state.serverUrl);
+    state.autoFallbackBlocked = true;
+    await this.broadcastClusterMode(CLUSTER_MODE_SWITCHING, targetUrl, state.serverUrl);
     try {
+      await this.makeLocalStandby();
 
       const standByTargets = allServers.filter((server) => server.serverUrl !== targetUrl);
       await Promise.all(
         standByTargets.map(async (server) => {
           if (server.serverUrl === state.serverUrl) {
-            await this.makeLocalStandby();
             return;
           }
 
@@ -459,18 +511,16 @@ class ClusterService {
 
     let targetResult = null;
     if (targetUrl === state.serverUrl) {
-      this.requestLocalPromotion();
-      targetResult = await this.makeLocalHost();
+      targetResult = await this.promoteToHostManually({ targetUrl, oldHostUrl: state.serverUrl });
     } else {
       try {
-        targetResult = await this.tellPeer(targetUrl, '/internal/become-host');
+        targetResult = await this.tellPeer(targetUrl, '/internal/promote', { reason: 'manual-switch', oldHostUrl: state.serverUrl, targetUrl }, SWITCH_PROMOTE_TIMEOUT_MS);
       } catch (error) {
         targetResult = {
           ok: false,
           error: error?.message || 'Falha ao iniciar ngrok após 3 tentativas'
         };
       }
-      await this.makeLocalStandby();
     }
 
       if (!targetResult?.ok) {
@@ -519,7 +569,7 @@ class ClusterService {
   }
 
   async electHostIfNeeded(excludedUrls = new Set()) {
-    if (this.isSwitching()) {
+    if (this.isSwitching() || state.autoFallbackBlocked) {
       console.log('[cluster] Fallback bloqueado durante SWITCHING');
       return null;
     }
