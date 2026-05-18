@@ -17,6 +17,44 @@ const ensureMigrationsTable = async (connection) => {
   `);
 };
 
+const formatParams = (params) => {
+  if (!Array.isArray(params)) {
+    return '[]';
+  }
+
+  try {
+    return JSON.stringify(params);
+  } catch (_error) {
+    return '[unserializable params]';
+  }
+};
+
+const buildDebugConnection = (connection, migrationId) => {
+  const runWithDebug = async (method, sql, params = []) => {
+    const startedAt = Date.now();
+
+    try {
+      return await connection[method](sql, params);
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const mysqlSql = error && error.sql ? error.sql : sql;
+      console.error(`[migrate] erro em ${migrationId} após ${durationMs}ms`);
+      console.error(`[migrate] método: connection.${method}`);
+      console.error('[migrate] SQL com falha:');
+      console.error(mysqlSql);
+      console.error(`[migrate] parâmetros: ${formatParams(params)}`);
+
+      throw error;
+    }
+  };
+
+  return {
+    ...connection,
+    query: (sql, params) => runWithDebug('query', sql, params),
+    execute: (sql, params) => runWithDebug('execute', sql, params)
+  };
+};
+
 const run = async () => {
   const connection = await pool.getConnection();
 
@@ -32,7 +70,15 @@ const run = async () => {
       }
 
       console.log(`[migrate] executando ${migration.id}...`);
-      await migration.up(connection);
+      const debugConnection = buildDebugConnection(connection, migration.id);
+
+      try {
+        await migration.up(debugConnection);
+      } catch (error) {
+        console.error(`[migrate] ${migration.id} falhou.`);
+        throw error;
+      }
+
       await connection.execute('INSERT INTO migrations (name) VALUES (?)', [migration.id]);
       console.log(`[migrate] ${migration.id} executada com sucesso.`);
     }
