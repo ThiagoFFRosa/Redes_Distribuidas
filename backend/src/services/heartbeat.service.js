@@ -3,6 +3,8 @@ const clusterService = require('./cluster.service');
 const clusterNodeRepo = require('./cluster-node.repository');
 const clusterHealthService = require('./cluster-health.service');
 
+const isSchemaNotMigratedError = (error) => ['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE'].includes(error?.code);
+
 class HeartbeatService {
   constructor() {
     this.timer = null;
@@ -35,7 +37,11 @@ class HeartbeatService {
         }
       }
     } catch (error) {
-      console.error('[heartbeat] erro no ciclo:', error.message);
+      if (isSchemaNotMigratedError(error)) {
+        console.error('[heartbeat] banco ainda não está migrado. Rode npm run migrate.');
+      } else {
+        console.error('[heartbeat] erro no ciclo:', error.message);
+      }
     } finally {
       this.running = false;
     }

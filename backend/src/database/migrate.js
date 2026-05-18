@@ -2,7 +2,9 @@ const pool = require('./connection');
 
 const migrations = [
   require('./migrations/001_create_users_table'),
-  require('./migrations/002_create_cluster_nodes_table')
+  require('./migrations/002_create_cluster_nodes_table'),
+  require('./migrations/003_update_cluster_nodes_for_db_cluster_management'),
+  require('./migrations/004_update_cluster_nodes_add_self_and_health_fields')
 ];
 
 const ensureMigrationsTable = async (connection) => {

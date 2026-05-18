@@ -6,6 +6,13 @@ const router = express.Router();
 const ROLES = ['HOST', 'STANDBY', 'UNKNOWN'];
 const STATUSES = ['ONLINE', 'OFFLINE', 'UNKNOWN'];
 
+const isSchemaNotMigratedError = (error) => ['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE'].includes(error?.code);
+const handleSchemaNotMigrated = (error, res) => {
+  if (!isSchemaNotMigratedError(error)) return false;
+  return res.status(500).json({ ok: false, error: 'Banco de dados não migrado. Rode npm run migrate.' });
+};
+
+
 const normalize = (body = {}) => ({
   node_name: String(body.node_name || '').trim(),
   tailscale_ip: String(body.tailscale_ip || '').trim(),
@@ -15,8 +22,13 @@ const normalize = (body = {}) => ({
 });
 
 router.get('/self', async (_req, res) => {
-  const node = await repo.getSelfNode();
-  res.json({ configured: Boolean(node), node: node || null });
+  try {
+    const node = await repo.getSelfNode();
+    res.json({ configured: Boolean(node), node: node || null });
+  } catch (error) {
+    if (handleSchemaNotMigrated(error, res)) return;
+    throw error;
+  }
 });
 
 router.post('/self', async (req, res) => {
