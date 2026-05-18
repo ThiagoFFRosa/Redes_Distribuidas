@@ -17,11 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
             { id: 3, nome: 'Represa Guarapiranga', lat: -23.682, lng: -46.733, cidade: 'São Paulo - SP', tipo: 'nivel', status: 'ativo', nivel: 4.80 },
             { id: 4, nome: 'Rio Una - Ponte Nova', lat: -23.030, lng: -45.560, cidade: 'Taubaté - SP', tipo: 'nivel', status: 'ativo', nivel: 5.15 }, /* Nivel critico mock */
         ],
-        servidores: [
-            { id: 'server_a', ip: '100.82.45.10', role: 'HOST', status: 'online' },
-            { id: 'server_b', ip: '100.82.45.11', role: 'STANDBY', status: 'online' },
-            { id: 'server_c', ip: '100.82.45.12', role: 'STANDBY', status: 'offline' },
-        ],
+        servidores: [],
         historicoGrafico: [2.1, 2.15, 2.2, 2.3, 2.4, 2.5, 2.45, 2.3],
         eventosDashboard: [
             { id: 1, tipo: 'info', msg: 'server_a assumiu como HOST', time: '10 min atrás' },
@@ -96,11 +92,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const initCards = () => {
         document.getElementById('dash-pontos').textContent = state.pontos.length;
         
-        let standbyCount = state.servidores.filter(s => s.role === 'STANDBY' && s.status === 'online').length;
+        let standbyCount = state.servidores.filter(s => s.role === 'STANDBY' && s.status === 'ONLINE').length;
         document.getElementById('dash-standby').textContent = standbyCount;
         
-        let host = state.servidores.find(s => s.role === 'HOST');
-        if(host) document.getElementById('dash-host').textContent = host.id;
+        let host = state.servidores.find(s => s.is_self) || state.servidores.find(s => s.role === 'HOST');
+        if(host) document.getElementById('dash-host').textContent = host.node_name;
     }
 
     /* ==========================================================================
@@ -368,6 +364,23 @@ document.addEventListener('DOMContentLoaded', () => {
        DASHBOARD E ALERTAS
        ========================================================================== */
 
+
+    const fetchClusterNodes = async () => {
+        const selfResp = await fetch('/api/cluster/self');
+        if (selfResp.status === 401) { window.location.href = '/login'; return; }
+        const selfData = await selfResp.json();
+        if (!selfData.configured) {
+            const node_name = window.prompt('Configurar este servidor: Nome do servidor');
+            const tailscale_ip = window.prompt('IP Tailscale deste servidor');
+            if (node_name && tailscale_ip) {
+                await fetch('/api/cluster/self', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ node_name: node_name.trim(), tailscale_ip: tailscale_ip.trim(), role: 'UNKNOWN' }) });
+            }
+        }
+        const nodesResp = await fetch('/api/cluster/nodes');
+        const nodesData = await nodesResp.json();
+        state.servidores = nodesData.nodes || [];
+    };
+
     const renderServidores = () => {
         const tbody = document.getElementById('tbody-servidores');
         if(!tbody) return;
@@ -375,44 +388,17 @@ document.addEventListener('DOMContentLoaded', () => {
         tbody.innerHTML = '';
         state.servidores.forEach(s => {
             const isHost = s.role === 'HOST';
-            const isOnline = s.status === 'online';
-            
-            const roleBadge = isHost 
-                ? `<span class="px-2.5 py-1 text-xs font-bold rounded-md bg-blue-100 text-blue-800">HOST</span>`
-                : `<span class="px-2.5 py-1 text-xs font-semibold rounded-md bg-slate-100 text-slate-600">STANDBY</span>`;
-                
-            const statusInd = isOnline
-                ? `<div class="flex items-center gap-1.5 text-sm font-medium text-green-600"><span class="w-2 h-2 rounded-full bg-green-500"></span> Online</div>`
-                : `<div class="flex items-center gap-1.5 text-sm font-medium text-red-600"><span class="w-2 h-2 rounded-full bg-red-500"></span> Offline</div>`;
-            
-            const iconColor = isHost ? "bg-primary/10 text-primary" : "bg-teal-50 text-secondary";
-            
-            let actions = `
-                <button class="px-3 py-1.5 border border-slate-200 rounded text-sm font-medium text-slate-600 hover:bg-slate-100" onclick="alert('Conexão: OK. Latência: 12ms')">Testar</button>
-            `;
-            
-            if(!isHost && isOnline) {
-                actions += `<button class="px-3 py-1.5 bg-white border border-primary text-primary rounded text-sm font-medium hover:bg-primary/5 ml-2" onclick="alert('Isto promoveria (Leader Election) este nó ao papel de HOST.')">Promover</button>`;
-            } else if (!isHost && !isOnline){
-                 actions += `<button class="px-3 py-1.5 bg-slate-100 rounded text-sm font-medium text-slate-400 cursor-not-allowed ml-2">Promover</button>`;
-            } else {
-                 actions += `<button class="px-3 py-1.5 bg-slate-100 rounded text-sm font-medium text-slate-400 cursor-not-allowed ml-2">É HOST</button>`;
-            }
-
+            const isOnline = s.status === 'ONLINE';
+            const roleBadge = `<span class="px-2.5 py-1 text-xs font-semibold rounded-md bg-slate-100 text-slate-700">${s.role}</span>`;
+            const statusInd = `<div class="flex items-center gap-1.5 text-sm font-medium ${isOnline ? 'text-green-600':'text-red-600'}"><span class="w-2 h-2 rounded-full ${isOnline ? 'bg-green-500':'bg-red-500'}"></span>${s.status}</div>`;
             tbody.innerHTML += `
                 <tr class="hover:bg-slate-50 transition-colors">
-                    <td class="p-4">
-                        <div class="flex items-center gap-3">
-                            <div class="w-8 h-8 rounded-lg ${iconColor} flex items-center justify-center"><i data-lucide="server" class="w-4 h-4"></i></div>
-                            <span class="font-semibold text-dark">${s.id}</span>
-                        </div>
-                    </td>
-                    <td class="p-4 text-sm font-mono text-slate-600">${s.ip}</td>
+                    <td class="p-4 font-semibold text-dark">${s.node_name}${s.is_self ? ' (Este servidor)' : ''}</td>
+                    <td class="p-4 text-sm font-mono text-slate-600">${s.tailscale_ip}</td>
                     <td class="p-4">${roleBadge}</td>
                     <td class="p-4">${statusInd}</td>
-                    <td class="p-4 text-right">${actions}</td>
-                </tr>
-            `;
+                    <td class="p-4 text-right"><button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
+                </tr>`;
         });
     }
 
@@ -518,7 +504,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Inits Globais ---
-    carregarServidoresDoBackend().finally(() => {
+    fetchClusterNodes().finally(() => {
         renderServidores();
         initCards();
     });

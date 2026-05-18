@@ -1,5 +1,7 @@
 const env = require('../config/env');
 const clusterService = require('./cluster.service');
+const clusterNodeRepo = require('./cluster-node.repository');
+const clusterHealthService = require('./cluster-health.service');
 
 class HeartbeatService {
   constructor() {
@@ -13,6 +15,14 @@ class HeartbeatService {
 
     try {
       await clusterService.refreshPeers();
+
+      const selfNode = await clusterNodeRepo.getSelfNode();
+      if (!selfNode) {
+        console.log('[cluster-health] Servidor atual ainda não configurado no banco.');
+      } else {
+        await clusterHealthService.checkAllNodes();
+      }
+
       const known = clusterService.getKnownServers();
       const activeHost = await clusterService.findValidActiveHost(known);
 
