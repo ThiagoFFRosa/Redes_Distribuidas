@@ -1,17 +1,29 @@
 const express = require('express');
-const { validateLogin } = require('../services/auth.service');
+const { authenticateWithEmail, signToken } = require('../services/auth.service');
 
 const router = express.Router();
 
-router.post('/login', (req, res) => {
-  const { username, password } = req.body;
+router.post('/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
 
-  if (!validateLogin(username, password)) {
-    return res.status(401).json({ message: 'Usuário ou senha inválidos.' });
+    if (!email || !password) {
+      return res.status(401).json({ message: 'Credenciais inválidas.' });
+    }
+
+    const user = await authenticateWithEmail(email, password);
+
+    if (!user) {
+      return res.status(401).json({ message: 'Credenciais inválidas.' });
+    }
+
+    const token = signToken(user);
+    req.session.user = user;
+
+    return res.json({ ok: true, user, token });
+  } catch (error) {
+    return next(error);
   }
-
-  req.session.user = { username };
-  return res.json({ ok: true, user: req.session.user });
 });
 
 router.post('/logout', (req, res) => {
