@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitoramento de Águas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#0284c7', // sky-600 (azul)
+                        secondary: '#0d9488', // teal-600 (verde água)
+                        dark: '#0f172a', // slate-900 (escuro)
+                        accent: '#22d3ee', // cyan-400 (ciano)
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/assets/css/style.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans antialiased overflow-x-hidden">
+    <!-- Navbar -->
+    <nav class="fixed w-full bg-white/90 backdrop-blur-md border-b border-slate-200 z-50 transition-all">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center gap-2 text-primary font-bold text-xl">
+                    <i data-lucide="waves" class="w-6 h-6"></i>
+                    Monitoramento de Águas
+                </div>
+                <div>
+                    <a href="/login" class="flex items-center gap-2 bg-primary hover:bg-sky-700 text-white px-5 py-2 rounded-lg font-medium transition-colors shadow-sm shadow-sky-200">
+                        <i data-lucide="log-in" class="w-4 h-4"></i>
+                        Acessar Painel
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="pt-32 pb-20 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto text-center">
+        <div class="inline-block mb-4 px-3 py-1 rounded-full bg-sky-100 text-primary text-sm font-semibold tracking-wide">
+            Arquitetura de Alta Disponibilidade
+        </div>
+        <h1 class="text-4xl md:text-5xl lg:text-6xl font-extrabold text-dark tracking-tight mb-6">
+            Sistema Distribuído de <br class="hidden md:block" />
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-primary to-secondary">Monitoramento de Águas e Alertas</span>
+        </h1>
+        <p class="mt-4 text-xl text-slate-600 max-w-3xl mx-auto mb-10">
+            Acompanhamento de pontos de medição, níveis de rios e alertas operacionais em uma arquitetura distribuída resiliente e em tempo real.
+        </p>
+        <div class="flex flex-col sm:flex-row justify-center gap-4">
+            <a href="/login" class="bg-primary hover:bg-sky-700 text-white px-8 py-3 rounded-lg font-medium text-lg transition-colors shadow-lg shadow-sky-200">
+                Acessar Painel
+            </a>
+            <a href="#como-funciona" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-8 py-3 rounded-lg font-medium text-lg transition-colors">
+                Ver Monitoramento
+            </a>
+        </div>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-8 relative z-10">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex items-center gap-4">
+                <div class="w-12 h-12 rounded-full bg-sky-100 flex items-center justify-center text-primary">
+                    <i data-lucide="map-pin"></i>
+                </div>
+                <div>
+                    <p class="text-sm text-slate-500 font-medium">Pontos Monitorados</p>
+                    <p class="text-2xl font-bold text-dark">42</p>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex items-center gap-4">
+                <div class="w-12 h-12 rounded-full bg-teal-100 flex items-center justify-center text-secondary">
+                    <i data-lucide="server"></i>
+                </div>
+                <div>
+                    <p class="text-sm text-slate-500 font-medium">Servidores Ativos</p>
+                    <p class="text-2xl font-bold text-dark">3</p>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex items-center gap-4">
+                <div class="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center text-orange-600">
+                    <i data-lucide="siren"></i>
+                </div>
+                <div>
+                    <p class="text-sm text-slate-500 font-medium">Alertas Simulados</p>
+                    <p class="text-2xl font-bold text-dark">5</p>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex items-center gap-4">
+                <div class="w-12 h-12 rounded-full bg-purple-100 flex items-center justify-center text-purple-600">
+                    <i data-lucide="clock"></i>
+                </div>
+                <div>
+                    <p class="text-sm text-slate-500 font-medium">Última Atualização</p>
+                    <p class="text-2xl font-bold text-dark">Agora</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Como Funciona -->
+    <section id="como-funciona" class="py-24 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl font-bold text-dark mb-4">Como o Sistema Funciona</h2>
+            <p class="text-lg text-slate-600 max-w-2xl mx-auto">Uma arquitetura distribuída desenhada para não perder nenhum dado e alertar no momento exato.</p>
+        </div>
+        
+        <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
+            <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 text-center hover:shadow-md transition-shadow">
+                <div class="mx-auto w-16 h-16 bg-sky-50 rounded-2xl flex items-center justify-center text-primary mb-6">
+                    <i data-lucide="droplets" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-xl font-bold text-dark mb-3">Coleta de Dados</h3>
+                <p class="text-slate-600">Sensores e entradas manuais enviam leituras de nível e condições dos rios continuamente.</p>
+            </div>
+            <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 text-center hover:shadow-md transition-shadow">
+                <div class="mx-auto w-16 h-16 bg-teal-50 rounded-2xl flex items-center justify-center text-secondary mb-6">
+                    <i data-lucide="network" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-xl font-bold text-dark mb-3">Distribuição</h3>
+                <p class="text-slate-600">Os dados trafegam pela rede distribuída em filas de eventos, garantindo a entrega.</p>
+            </div>
+            <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 text-center hover:shadow-md transition-shadow">
+                <div class="mx-auto w-16 h-16 bg-purple-50 rounded-2xl flex items-center justify-center text-purple-600 mb-6">
+                    <i data-lucide="activity" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-xl font-bold text-dark mb-3">Monitoramento</h3>
+                <p class="text-slate-600">Um servidor Host consolida os dados em tempo real, enquanto Réplicas ficam em standby.</p>
+            </div>
+            <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 text-center hover:shadow-md transition-shadow">
+                <div class="mx-auto w-16 h-16 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-600 mb-6">
+                    <i data-lucide="bell-ring" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-xl font-bold text-dark mb-3">Alertas por Nível</h3>
+                <p class="text-slate-600">Caso o nível ultrapasse limites críticos, alertas preventivos são disparados para a central.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Mapa Mockado Visual -->
+    <section class="py-12 bg-slate-100 border-y border-slate-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center flex flex-col items-center">
+            <h2 class="text-2xl font-bold text-dark mb-8">Mapa de Pontos de Monitoramento</h2>
+            <div class="w-full max-w-4xl aspect-[21/9] bg-white rounded-xl shadow-inner border border-slate-200 flex items-center justify-center relative overflow-hidden">
+                <!-- Mapa ilustrativo (pode ser substituído por mapa real na dashboard) -->
+                <div class="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]"></div>
+                <div class="relative z-10 text-slate-400 flex flex-col items-center">
+                    <i data-lucide="map" class="w-16 h-16 mb-4"></i>
+                    <p class="text-lg">Mapa Interativo e Dados em Tempo Real disponíveis no Painel</p>
+                    <a href="/login" class="mt-4 text-primary font-medium hover:underline">Acessar Painel &rarr;</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-dark py-12 text-center text-slate-400">
+        <div class="max-w-7xl mx-auto px-4 flex flex-col items-center gap-4">
+            <div class="flex items-center gap-2 text-white font-bold text-xl mb-4">
+                <i data-lucide="waves" class="w-6 h-6"></i>
+                Monitoramento de Águas
+            </div>
+            <p>&copy; 2026 Sistema Distribuído de Monitoramento de Águas e Alertas.</p>
+            <p class="text-sm">Projeto acadêmico de Redes Distribuídas. Desenvolvido para simular arquitetura de servidores e envio de dados.</p>
+        </div>
+    </footer>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
+
