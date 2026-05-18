@@ -1,9 +1,21 @@
 {
   "nodes": [
     {
-      "serverName": "server_a",
-      "serverUrl": "http://127.0.0.1:3000",
-      "addedAt": "2026-04-28T14:49:34.714Z",
+      "serverName": "server_b",
+      "serverUrl": "http://100.78.8.102:3000",
+      "addedAt": "2026-05-05T02:37:07.242Z",
+      "lastSeen": null
+    },
+    {
+      "serverName": "server_d",
+      "serverUrl": "http://100.93.100.81:3000",
+      "addedAt": "2026-04-28T20:23:14.637Z",
+      "lastSeen": null
+    },
+    {
+      "serverName": "server_c",
+      "serverUrl": "http://100.91.219.121:3000",
+      "addedAt": "2026-05-03T20:48:11.667Z",
       "lastSeen": null
     }
   ]

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Monitoramento de Águas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#0284c7', // sky-600
+                        secondary: '#0d9488', // teal-600
+                        dark: '#0f172a', // slate-900
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/assets/css/style.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 font-sans antialiased h-screen flex items-center justify-center p-4">
+    
+    <div class="max-w-md w-full bg-white rounded-2xl shadow-xl border border-slate-100 p-8">
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-sky-50 text-primary mb-4">
+                <i data-lucide="waves" class="w-8 h-8"></i>
+            </div>
+            <h1 class="text-2xl font-bold text-dark">Sistema Distribuído</h1>
+            <p class="text-slate-500 mt-1">Acesso ao Painel de Monitoramento</p>
+        </div>
+
+        <form action="dashboard.html" method="GET" class="space-y-6">
+            <div>
+                <label for="email" class="block text-sm font-medium text-slate-700 mb-1">E-mail ou Usuário</label>
+                <div class="relative">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <i data-lucide="user" class="h-5 w-5 text-slate-400"></i>
+                    </div>
+                    <input type="text" id="email" class="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary sm:text-sm" placeholder="admin@sistema.local" required>
+                </div>
+            </div>
+
+            <div>
+                <label for="password" class="block text-sm font-medium text-slate-700 mb-1">Senha</label>
+                <div class="relative">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <i data-lucide="lock" class="h-5 w-5 text-slate-400"></i>
+                    </div>
+                    <input type="password" id="password" class="block w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary sm:text-sm" placeholder="••••••••" required>
+                </div>
+            </div>
+
+            <div>
+                <button type="submit" class="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-primary hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition-colors">
+                    Entrar no Painel
+                </button>
+            </div>
+        </form>
+
+        <div class="mt-8 text-center border-t border-slate-100 pt-6">
+            <a href="index.html" class="text-sm font-medium text-slate-500 hover:text-primary transition-colors flex justify-center items-center gap-2">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                Voltar para a página inicial
+            </a>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
