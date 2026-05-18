@@ -190,6 +190,29 @@
                         </div>
                     </div>
                 </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                    <div class="card p-5">
+                        <h4 class="font-bold text-dark text-base">Solicitações pendentes</h4>
+                        <p class="text-sm text-slate-500 mt-1">Aprove ou rejeite novos servidores solicitando entrada no cluster.</p>
+                        <div id="join-requests-feedback" class="text-sm mt-3"></div>
+                        <div class="overflow-x-auto mt-4">
+                            <table class="w-full text-sm min-w-[520px]"><thead><tr class="text-slate-500"><th class="p-2 text-left">Nome</th><th class="p-2 text-left">IP</th><th class="p-2 text-left">Função</th><th class="p-2 text-left">Data</th><th class="p-2 text-right">Ações</th></tr></thead><tbody id="tbody-join-requests" class="divide-y"></tbody></table>
+                        </div>
+                    </div>
+                    <div class="card p-5">
+                        <h4 class="font-bold text-dark text-base">Conectar este servidor a um host existente</h4>
+                        <form id="form-request-join-host" class="space-y-3 mt-4">
+                            <input id="join-host-url" class="w-full border rounded-lg px-3 py-2" placeholder="https://fuzzylogic.ngrok.dev" required />
+                            <input id="join-node-name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome deste servidor" required />
+                            <input id="join-node-ip" class="w-full border rounded-lg px-3 py-2" placeholder="IP Tailscale deste servidor" required />
+                            <input id="join-public-url" class="w-full border rounded-lg px-3 py-2" placeholder="URL pública/local (opcional)" />
+                            <select id="join-requested-role" class="w-full border rounded-lg px-3 py-2"><option value="STANDBY">STANDBY</option><option value="UNKNOWN">UNKNOWN</option><option value="HOST">HOST</option></select>
+                            <button type="submit" class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg">Enviar solicitação</button>
+                        </form>
+                        <div id="join-host-feedback" class="text-sm mt-3"></div>
+                    </div>
+                </div>
+
             </section>
 
             <!-- Section: Servidores -->
@@ -421,5 +444,21 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/assets/js/app.js"></script>
+
+<div id="self-config-modal" class="fixed inset-0 bg-slate-950/60 z-50 hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-xl max-w-xl w-full p-6 border border-slate-200">
+    <h3 class="text-xl font-bold text-dark">Configurar este servidor</h3>
+    <p class="text-sm text-slate-600 mt-2">Este servidor ainda não foi registrado no cluster. Configure as informações locais para ativar o gerenciamento distribuído.</p>
+    <form id="self-config-form" class="space-y-3 mt-4">
+      <input id="self-node-name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome do servidor" required />
+      <input id="self-node-ip" class="w-full border rounded-lg px-3 py-2" placeholder="IP Tailscale deste servidor" required />
+      <input id="self-public-url" class="w-full border rounded-lg px-3 py-2" placeholder="URL pública/ngrok (opcional)" />
+      <select id="self-role" class="w-full border rounded-lg px-3 py-2"><option value="HOST">HOST</option><option value="STANDBY">STANDBY</option><option value="UNKNOWN" selected>UNKNOWN</option></select>
+      <div id="self-config-error" class="text-sm text-red-600"></div>
+      <button type="submit" class="w-full bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg">Salvar configuração</button>
+    </form>
+  </div>
+</div>
+
 </body>
 </html>

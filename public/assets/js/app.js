@@ -227,7 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             
             if(!selectedLatLng) {
-                alert("Por favor, clique no mapa para selecionar a localização do ponto.");
+                console.warn("Por favor, clique no mapa para selecionar a localização do ponto.");
                 return;
             }
 
@@ -265,7 +265,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 radius: 8, fillColor: "#22c55e", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.8
             }).addTo(map).bindPopup(`<b>${novoPonto.nome}</b><br>Ponto Novo cadatrado.`);
 
-            alert(`Ponto "${novoPonto.nome}" cadastrado com sucesso!`);
+            console.info(`Ponto "${novoPonto.nome}" cadastrado com sucesso!`);
         });
     }
 
@@ -298,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             
             const pontoId = document.getElementById('dado-ponto').value;
-            if(!pontoId) { alert("Selecione um ponto."); return; }
+            if(!pontoId) { console.warn("Selecione um ponto."); return; }
 
             const ponto = state.pontos.find(p => p.id == pontoId);
             const valor = parseFloat(document.getElementById('dado-valor').value);
@@ -365,16 +365,19 @@ document.addEventListener('DOMContentLoaded', () => {
        ========================================================================== */
 
 
+    const selfModal = document.getElementById('self-config-modal');
+    const selfError = document.getElementById('self-config-error');
+    const openSelfModal = () => { if (selfModal) selfModal.classList.remove('hidden'); if (selfModal) selfModal.classList.add('flex'); };
+    const closeSelfModal = () => { if (selfModal) selfModal.classList.add('hidden'); if (selfModal) selfModal.classList.remove('flex'); };
+
     const fetchClusterNodes = async () => {
         const selfResp = await fetch('/api/cluster/self');
         if (selfResp.status === 401) { window.location.href = '/login'; return; }
         const selfData = await selfResp.json();
         if (!selfData.configured) {
-            const node_name = window.prompt('Configurar este servidor: Nome do servidor');
-            const tailscale_ip = window.prompt('IP Tailscale deste servidor');
-            if (node_name && tailscale_ip) {
-                await fetch('/api/cluster/self', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ node_name: node_name.trim(), tailscale_ip: tailscale_ip.trim(), role: 'UNKNOWN' }) });
-            }
+            openSelfModal();
+        } else {
+            closeSelfModal();
         }
         const nodesResp = await fetch('/api/cluster/nodes');
         const nodesData = await nodesResp.json();
@@ -503,8 +506,50 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+
+    const loadJoinRequests = async () => {
+        const resp = await fetch('/api/cluster/join-requests?status=PENDING');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const tbody = document.getElementById('tbody-join-requests');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        (data.requests || []).forEach((r) => {
+            tbody.innerHTML += `<tr><td class="p-2">${r.node_name}</td><td class="p-2 font-mono">${r.tailscale_ip}</td><td class="p-2">${r.requested_role}</td><td class="p-2">${new Date(r.created_at).toLocaleString()}</td><td class="p-2 text-right"><button data-act="approve" data-id="${r.id}" class="px-2 py-1 bg-green-600 text-white rounded">Aprovar</button> <button data-act="reject" data-id="${r.id}" class="px-2 py-1 bg-red-600 text-white rounded">Rejeitar</button></td></tr>`;
+        });
+    };
+
+    document.getElementById('self-config-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        selfError.textContent = '';
+        const payload = { node_name: document.getElementById('self-node-name').value.trim(), tailscale_ip: document.getElementById('self-node-ip').value.trim(), public_url: document.getElementById('self-public-url').value.trim(), role: document.getElementById('self-role').value };
+        if (!payload.node_name || !payload.tailscale_ip) { selfError.textContent = 'Nome e IP são obrigatórios.'; return; }
+        const resp = await fetch('/api/cluster/self', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) { selfError.textContent = data.message || 'Erro ao salvar configuração.'; return; }
+        closeSelfModal(); await fetchClusterNodes(); renderServidores(); initCards();
+    });
+
+    document.getElementById('tbody-join-requests')?.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-id]'); if (!btn) return;
+        const id = btn.getAttribute('data-id');
+        const act = btn.getAttribute('data-act');
+        await fetch(`/api/cluster/join-requests/${id}/${act}`, { method:'POST' });
+        await fetchClusterNodes(); renderServidores(); await loadJoinRequests();
+    });
+
+    document.getElementById('form-request-join-host')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const feedback = document.getElementById('join-host-feedback');
+        feedback.textContent = '';
+        const payload = { host_url: document.getElementById('join-host-url').value.trim(), node_name: document.getElementById('join-node-name').value.trim(), tailscale_ip: document.getElementById('join-node-ip').value.trim(), public_url: document.getElementById('join-public-url').value.trim(), requested_role: document.getElementById('join-requested-role').value };
+        const resp = await fetch('/api/cluster/request-join-host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        const data = await resp.json().catch(() => ({}));
+        feedback.textContent = resp.ok ? 'Solicitação enviada. Aguarde aprovação no host.' : (data.message || 'Falha ao enviar solicitação.');
+    });
+
     // --- Inits Globais ---
-    fetchClusterNodes().finally(() => {
+    fetchClusterNodes().finally(async () => {
         renderServidores();
         initCards();
     });

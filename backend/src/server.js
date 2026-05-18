@@ -58,7 +58,7 @@ app.use('/internal', clusterRoutes);
 app.use('/api/servers', serverRoutes);
 app.use('/api/ngrok', requireAuth, ngrokRoutes);
 app.use('/api/inmet', requireAuth, inmetRoutes);
-app.use('/api/cluster', requireAuth, clusterDbRoutes);
+app.use('/api/cluster', clusterDbRoutes);
 
 app.use((error, req, res, _next) => {
   console.error('[server] erro não tratado:', error);

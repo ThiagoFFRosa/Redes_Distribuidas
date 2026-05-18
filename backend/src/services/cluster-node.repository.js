@@ -24,9 +24,7 @@ class ClusterNodeRepository {
     return rows[0] ? mapNode(rows[0]) : null;
   }
 
-  async clearSelfFlag() {
-    await db.execute('UPDATE cluster_nodes SET is_self = 0 WHERE is_self = 1');
-  }
+  async clearSelfFlag() { await db.execute('UPDATE cluster_nodes SET is_self = 0 WHERE is_self = 1'); }
 
   async createNode(payload) {
     const [result] = await db.execute(`INSERT INTO cluster_nodes
@@ -44,6 +42,52 @@ class ClusterNodeRepository {
   }
 
   async deleteNode(id) { await db.execute('DELETE FROM cluster_nodes WHERE id=?', [id]); }
+
+  async findPendingJoinRequestByIp(ip) {
+    const [rows] = await db.execute('SELECT * FROM cluster_join_requests WHERE tailscale_ip = ? AND status = "PENDING" LIMIT 1', [ip]);
+    return rows[0] || null;
+  }
+
+  async createJoinRequest(payload) {
+    const [result] = await db.execute(`INSERT INTO cluster_join_requests
+      (node_name, tailscale_ip, public_url, requested_role, status, request_token_hash, secret_fingerprint, requester_metadata)
+      VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.requested_role, payload.request_token_hash, payload.secret_fingerprint, payload.requester_metadata]);
+    return this.findJoinRequestById(result.insertId);
+  }
+
+  async updateJoinRequest(id, payload) {
+    await db.execute(`UPDATE cluster_join_requests SET node_name=?, tailscale_ip=?, public_url=?, requested_role=?,
+      request_token_hash=?, secret_fingerprint=?, requester_metadata=? WHERE id=?`,
+    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.requested_role, payload.request_token_hash, payload.secret_fingerprint, payload.requester_metadata, id]);
+    return this.findJoinRequestById(id);
+  }
+
+  async listJoinRequests(status) {
+    if (status) {
+      const [rows] = await db.execute('SELECT * FROM cluster_join_requests WHERE status = ? ORDER BY created_at DESC', [status]);
+      return rows;
+    }
+    const [rows] = await db.execute('SELECT * FROM cluster_join_requests ORDER BY created_at DESC');
+    return rows;
+  }
+
+  async findJoinRequestById(id) {
+    const [rows] = await db.execute('SELECT * FROM cluster_join_requests WHERE id = ? LIMIT 1', [id]);
+    return rows[0] || null;
+  }
+
+  async approveJoinRequest(id, approvedNodeId) {
+    await db.execute(`UPDATE cluster_join_requests
+      SET status='APPROVED', approved_node_id=?, approved_at=NOW(), rejected_at=NULL
+      WHERE id=?`, [approvedNodeId, id]);
+    return this.findJoinRequestById(id);
+  }
+
+  async rejectJoinRequest(id) {
+    await db.execute("UPDATE cluster_join_requests SET status='REJECTED', rejected_at=NOW() WHERE id=?", [id]);
+    return this.findJoinRequestById(id);
+  }
 }
 
 module.exports = new ClusterNodeRepository();
