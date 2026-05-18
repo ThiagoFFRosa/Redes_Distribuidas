@@ -203,12 +203,15 @@
                         <h4 class="font-bold text-dark text-base">Conectar este servidor a um host existente</h4>
                         <form id="form-request-join-host" class="space-y-3 mt-4">
                             <input id="join-host-url" class="w-full border rounded-lg px-3 py-2" placeholder="https://fuzzylogic.ngrok.dev" required />
-                            <input id="join-node-name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome deste servidor" required />
-                            <input id="join-node-ip" class="w-full border rounded-lg px-3 py-2" placeholder="IP Tailscale deste servidor" required />
-                            <input id="join-public-url" class="w-full border rounded-lg px-3 py-2" placeholder="URL pública/local (opcional)" />
-                            <select id="join-requested-role" class="w-full border rounded-lg px-3 py-2"><option value="STANDBY">STANDBY</option><option value="UNKNOWN">UNKNOWN</option><option value="HOST">HOST</option></select>
-                            <button type="submit" class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg">Enviar solicitação</button>
+                            <button id="btn-request-join-host" type="submit" class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg">Enviar solicitação</button>
                         </form>
+                        <div class="mt-4 p-3 rounded-lg bg-slate-50 border border-slate-200 text-sm">
+                            <p class="font-semibold text-slate-700 mb-2">Dados que serão enviados:</p>
+                            <p>Nome: <span id="join-self-node-name" class="font-medium">-</span></p>
+                            <p>IP Tailscale: <span id="join-self-node-ip" class="font-medium">-</span></p>
+                            <p>URL pública/local: <span id="join-self-public-url" class="font-medium">-</span></p>
+                            <p>Função solicitada: <span id="join-self-requested-role" class="font-medium">STANDBY</span></p>
+                        </div>
                         <div id="join-host-feedback" class="text-sm mt-3"></div>
                     </div>
                 </div>

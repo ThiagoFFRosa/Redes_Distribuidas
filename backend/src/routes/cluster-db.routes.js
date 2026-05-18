@@ -26,15 +26,29 @@ const normalize = (body = {}) => ({
 
 const normalizeRequestedRole = (value) => (ROLES.includes(value) ? value : 'STANDBY');
 
+
+const normalizeUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^[\w.-]+\.(ngrok\.dev|ngrok-free\.app|dev)(:\d+)?(\/.*)?$/i.test(raw)) return `https://${raw}`;
+  if (/^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?(\/.*)?$/i.test(raw)) return `http://${raw}`;
+  return `https://${raw}`;
+};
+
+const resolveRequestedRoleForJoin = () => 'STANDBY';
+
 router.post('/join-request', async (req, res) => {
   try {
     const requesterIp = req.ip || req.socket?.remoteAddress || 'desconhecido';
-    console.log(`[join-request] solicitação recebida de IP ${requesterIp}`);
+    const { node_name, tailscale_ip, public_url, requested_role, session_secret, metadata } = req.body || {};
+
+    console.log(`[join-request] solicitação recebida do servidor ${String(node_name || '').trim() || 'desconhecido'} / ${String(tailscale_ip || '').trim() || 'desconhecido'}`);
+    console.log(`[join-request] HTTP remote address: ${requesterIp}`);
 
     if (!env.sessionSecret) return res.status(500).json({ ok: false, message: 'SESSION_SECRET não configurado no host.' });
 
-    const { node_name, tailscale_ip, public_url, requested_role, session_secret, metadata } = req.body || {};
-    if (session_secret !== env.sessionSecret) {
+        if (session_secret !== env.sessionSecret) {
       console.warn('[join-request] secret inválido');
       return res.status(403).json({ ok: false, message: 'Secret inválido.' });
     }
@@ -59,7 +73,7 @@ router.post('/join-request', async (req, res) => {
     if (pending) await repo.updateJoinRequest(pending.id, payload);
     else await repo.createJoinRequest(payload);
 
-    console.log('[join-request] solicitação registrada como pending');
+    console.log('[join-request] solicitação registrada como PENDING');
     return res.json({ ok: true, status: 'PENDING', message: 'Solicitação enviada. Aguardando aprovação no host.' });
   } catch (error) {
     if (handleSchemaNotMigrated(error, res)) return;
@@ -73,7 +87,7 @@ router.get('/bootstrap', async (req, res) => {
   if (!secret || secret !== env.sessionSecret) return res.status(403).json({ ok: false, message: 'Secret inválido.' });
   const self = await repo.getSelfNode();
   const nodes = await repo.getAllNodes();
-  return res.json({ ok: true, self, nodes, generated_at: new Date().toISOString() });
+  return res.json({ ok: true, host: self, nodes, generated_at: new Date().toISOString() });
 });
 
 router.use(requireAuth);
@@ -112,10 +126,10 @@ router.post('/join-requests/:id/approve', async (req, res) => {
 
   let node = await repo.findByTailscaleIp(request.tailscale_ip);
   if (!node) {
-    node = await repo.createNode({ node_name: request.node_name, tailscale_ip: request.tailscale_ip, public_url: request.public_url, role: normalizeRequestedRole(request.requested_role), status: 'UNKNOWN', is_self: 0, last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: request.requester_metadata || null });
+    node = await repo.createNode({ node_name: request.node_name, tailscale_ip: request.tailscale_ip, public_url: request.public_url, role: request.requested_role === 'HOST' ? 'STANDBY' : normalizeRequestedRole(request.requested_role), status: 'UNKNOWN', is_self: 0, last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: request.requester_metadata || null });
     console.log('[join-request] servidor criado em cluster_nodes');
   } else {
-    node = await repo.updateNode(node.id, { ...node, node_name: request.node_name, tailscale_ip: request.tailscale_ip, public_url: request.public_url, role: normalizeRequestedRole(request.requested_role), status: 'UNKNOWN', is_self: 0 });
+    node = await repo.updateNode(node.id, { ...node, node_name: request.node_name, tailscale_ip: request.tailscale_ip, public_url: request.public_url, role: request.requested_role === 'HOST' ? 'STANDBY' : normalizeRequestedRole(request.requested_role), status: 'UNKNOWN', is_self: 0 });
   }
   await repo.approveJoinRequest(id, node.id);
   console.log('[join-request] solicitação aprovada');
@@ -130,18 +144,61 @@ router.post('/join-requests/:id/reject', async (req, res) => {
 });
 
 router.post('/request-join-host', async (req, res) => {
-  const { host_url, node_name, tailscale_ip, public_url, requested_role } = req.body || {};
+  const { host_url } = req.body || {};
   if (!env.sessionSecret) return res.status(500).json({ ok: false, message: 'SESSION_SECRET não configurado localmente.' });
-  if (!String(host_url || '').trim() || !/^https?:\/\//.test(String(host_url).trim())) return res.status(400).json({ ok: false, message: 'host_url inválida.' });
-  if (!String(node_name || '').trim() || !String(tailscale_ip || '').trim()) return res.status(400).json({ ok: false, message: 'node_name e tailscale_ip são obrigatórios.' });
 
-  const url = `${String(host_url).trim().replace(/\/$/, '')}/api/cluster/join-request`;
-  console.log(`[request-join-host] enviando solicitação para host ${url}`);
+  const self = await repo.getSelfNode();
+  if (!self) return res.status(400).json({ ok: false, message: 'Configure este servidor antes de solicitar entrada em um cluster.' });
+
+  const normalizedHostUrl = normalizeUrl(host_url);
+  if (!normalizedHostUrl) return res.status(400).json({ ok: false, message: 'host_url inválida.' });
+
+  console.log(`[request-join-host] self node carregado: ${self.node_name} / ${self.tailscale_ip}`);
+  const url = `${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/join-request`;
+  console.log(`[request-join-host] enviando solicitação para ${normalizedHostUrl}`);
+
+  const payload = {
+    node_name: String(self.node_name).trim(),
+    tailscale_ip: String(self.tailscale_ip).trim(),
+    public_url: normalizeUrl(self.public_url),
+    requested_role: resolveRequestedRoleForJoin(),
+    session_secret: env.sessionSecret,
+    metadata: {
+      port: process.env.PORT || null,
+      source: 'self-node-db',
+      local_node_id: self.id
+    }
+  };
+
   try {
-    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_name: String(node_name).trim(), tailscale_ip: String(tailscale_ip).trim(), public_url: String(public_url || '').trim() || null, requested_role: normalizeRequestedRole(requested_role), session_secret: env.sessionSecret, metadata: { source: 'manual-join', requested_at: new Date().toISOString() } }) });
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return res.status(response.status).json(data);
-    console.log(`[request-join-host] resposta do host: ${data.status || 'UNKNOWN'}`);
+
+    console.log(`[request-join-host] resposta do host: ${data.status || (data.already_registered ? 'ALREADY_REGISTERED' : 'UNKNOWN')}`);
+
+    if (data.already_registered || data.status === 'APPROVED') {
+      const bootstrapResp = await fetch(`${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/bootstrap`, { headers: { 'X-Cluster-Secret': env.sessionSecret } });
+      if (bootstrapResp.ok) {
+        const bootstrapData = await bootstrapResp.json();
+        for (const node of (bootstrapData.nodes || [])) {
+          if (!node?.tailscale_ip || node.is_self || node.tailscale_ip === self.tailscale_ip) continue;
+          await repo.upsertNodeByTailscaleIp({
+            node_name: node.node_name,
+            tailscale_ip: node.tailscale_ip,
+            public_url: normalizeUrl(node.public_url),
+            role: node.role || 'UNKNOWN',
+            status: node.status || 'UNKNOWN',
+            is_self: 0,
+            last_heartbeat_at: node.last_heartbeat_at || null,
+            last_healthcheck_at: node.last_healthcheck_at || null,
+            healthcheck_error: node.healthcheck_error || null,
+            metadata: node.metadata || null
+          });
+        }
+      }
+    }
+
     return res.json(data);
   } catch (error) {
     console.error(`[request-join-host] erro ao conectar no host: ${error.message}`);
