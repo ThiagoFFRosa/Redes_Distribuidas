@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel - Monitoramento de Águas</title>
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#0284c7', // sky-600
+                        secondary: '#0d9488', // teal-600
+                        dark: '#0f172a', // slate-900
+                        accent: '#22d3ee',
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/assets/css/style.css">
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 font-sans antialiased text-slate-800 overflow-hidden flex h-screen w-full">
+
+    <!-- Sidebar -->
+    <aside class="w-64 bg-dark text-slate-300 flex flex-col h-full shrink-0 transition-transform -translate-x-full lg:translate-x-0 absolute lg:relative z-20" id="sidebar">
+        <div class="h-16 flex items-center justify-between lg:justify-start px-6 border-b border-slate-700/50 bg-slate-950/30">
+            <div class="flex items-center">
+                <i data-lucide="waves" class="w-6 h-6 text-primary mr-3"></i>
+                <span class="font-bold text-white text-lg truncate">Painel ADM</span>
+            </div>
+            <button id="close-sidebar-btn" class="lg:hidden text-slate-400 hover:text-white">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        
+        <div class="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider mt-2">Menu Principal</div>
+        
+        <nav class="flex-1 px-4 space-y-1 overflow-y-auto" id="sidebar-nav">
+            <a href="#" class="nav-link active flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-target="visao-geral">
+                <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
+                Visão Geral
+            </a>
+            <a href="#" class="nav-link flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-slate-800 hover:text-white" data-target="servidores">
+                <i data-lucide="server" class="w-5 h-5"></i>
+                Servidores
+            </a>
+            <a href="#" class="nav-link flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-slate-800 hover:text-white" data-target="pontos-dados">
+                <i data-lucide="map-pin" class="w-5 h-5"></i>
+                Pontos de Dados
+            </a>
+            <a href="#" class="nav-link flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-slate-800 hover:text-white" data-target="inserir-dados">
+                <i data-lucide="send" class="w-5 h-5"></i>
+                Inserir Dados
+            </a>
+            <a href="#" class="nav-link flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors hover:bg-slate-800 hover:text-white" data-target="alertas">
+                <div class="relative">
+                    <i data-lucide="bell" class="w-5 h-5"></i>
+                    <span class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-dark"></span>
+                </div>
+                Alertas
+            </a>
+        </nav>
+        
+        <div class="h-16 px-4 bg-slate-950/50 flex items-center shrink-0 border-t border-slate-700/50">
+            <a href="/" class="flex items-center gap-3 w-full text-slate-400 hover:text-white text-sm font-medium transition-colors">
+                <i data-lucide="log-out" class="w-5 h-5"></i>
+                Sair
+            </a>
+        </div>
+    </aside>
+
+    <!-- Overlay for mobile sidebar -->
+    <div id="sidebar-overlay" class="fixed inset-0 bg-slate-900/50 z-10 hidden lg:hidden"></div>
+
+    <!-- Main Content -->
+    <div class="flex-1 flex flex-col h-full overflow-hidden relative w-full">
+        
+        <!-- Topbar -->
+        <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 shrink-0 z-10 shadow-sm">
+            <div class="flex items-center gap-4">
+                <button id="mobile-menu-btn" class="lg:hidden p-2 -ml-2 text-slate-500 hover:text-primary hover:bg-slate-100 rounded-lg">
+                    <i data-lucide="menu" class="w-5 h-5"></i>
+                </button>
+                <h1 id="page-title" class="text-lg sm:text-xl font-bold text-dark">Visão Geral</h1>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <!-- Status system -->
+                <div class="hidden sm:flex items-center gap-2 px-3 py-1 bg-green-50 rounded-full border border-green-100 text-green-700 text-sm font-medium">
+                    <span class="relative flex h-2 w-2">
+                      <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </span>
+                    Sistema Operacional
+                </div>
+                <div class="flex items-center gap-2 sm:pl-4 sm:border-l border-slate-200">
+                    <div class="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                        <i data-lucide="user" class="w-4 h-4"></i>
+                    </div>
+                    <span class="text-sm font-medium text-slate-700 hidden sm:block">Admin</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Dynamic Content Area -->
+        <main class="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-slate-50" id="main-content">
+            
+            <!-- Section: Visão Geral -->
+            <section id="sec-visao-geral" class="section-content block">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-8">
+                    <!-- Cards -->
+                    <div class="card p-5">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <p class="text-slate-500 text-sm font-medium" id="txt-host-atual-label">Host Atual</p>
+                                <h3 class="text-xl font-bold text-dark mt-1" id="dash-host">server_a</h3>
+                            </div>
+                            <div class="p-2 bg-primary/10 rounded-lg text-primary"><i data-lucide="hard-drive"></i></div>
+                        </div>
+                        <p class="text-xs text-green-600 flex items-center gap-1"><i data-lucide="check-circle" class="w-3 h-3"></i> Principal respondendo</p>
+                    </div>
+                    <div class="card p-5">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <p class="text-slate-500 text-sm font-medium">Servidores Standby</p>
+                                <h3 class="text-xl font-bold text-dark mt-1" id="dash-standby">2</h3>
+                            </div>
+                            <div class="p-2 bg-teal-50 rounded-lg text-secondary"><i data-lucide="server-crash"></i></div>
+                        </div>
+                        <p class="text-xs text-slate-500">Prontos para assumir</p>
+                    </div>
+                    <div class="card p-5">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <p class="text-slate-500 text-sm font-medium">Pontos Cadastrados</p>
+                                <h3 class="text-xl font-bold text-dark mt-1" id="dash-pontos">4</h3>
+                            </div>
+                            <div class="p-2 bg-sky-50 rounded-lg text-sky-600"><i data-lucide="map"></i></div>
+                        </div>
+                        <p class="text-xs text-slate-500">Operando na bacia</p>
+                    </div>
+                    <div class="card p-5">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <p class="text-slate-500 text-sm font-medium">Última Leitura</p>
+                                <h3 class="text-xl font-bold text-dark mt-1" id="dash-last-reading">Agora</h3>
+                            </div>
+                            <div class="p-2 bg-purple-50 rounded-lg text-purple-600"><i data-lucide="activity"></i></div>
+                        </div>
+                        <p class="text-xs text-slate-500">Sistema ativo</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Grafico -->
+                    <div class="card p-0 lg:col-span-2 flex flex-col">
+                        <div class="p-5 border-b border-slate-100 flex justify-between items-center">
+                            <h3 class="font-bold text-dark">Nível do Rio (Exemplo)</h3>
+                            <span class="text-xs font-medium bg-slate-100 text-slate-600 px-2 py-1 rounded">Média consolidada</span>
+                        </div>
+                        <div class="p-4 flex-1 relative min-h-[300px] w-full">
+                            <canvas id="chart-nivel-rio"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Eventos -->
+                    <div class="card p-0 flex flex-col h-[400px] lg:h-auto">
+                        <div class="p-5 border-b border-slate-100">
+                            <h3 class="font-bold text-dark">Últimos Eventos no Cluster</h3>
+                        </div>
+                        <div class="p-0 overflow-y-auto flex-1 bg-slate-50/50">
+                            <ul class="divide-y divide-slate-100" id="dashboard-events-list">
+                                <!-- Preenchido via JS -->
+                            </ul>
+                        </div>
+                        <div class="p-3 border-t border-slate-100 bg-slate-50 text-center rounded-b-xl shrink-0">
+                            <a href="#" class="text-sm font-medium text-primary hover:underline" onclick="document.querySelector('[data-target=inserir-dados]').click()">Ver fila completa</a>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section: Servidores -->
+            <section id="sec-servidores" class="section-content hidden">
+                <div class="card p-0 overflow-hidden">
+                    <div class="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                        <div>
+                            <h3 class="font-bold text-dark text-lg">Servidores do Cluster</h3>
+                            <p class="text-sm text-slate-500 mt-1">Gerencie a arquitetura distribuída e os nós de processamento.</p>
+                        </div>
+                        <button class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 whitespace-nowrap">
+                            <i data-lucide="refresh-cw" class="w-4 h-4"></i> Atualizar Status
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto w-full">
+                        <table class="w-full text-left border-collapse min-w-[700px]">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider border-b border-slate-200">
+                                    <th class="p-4 font-medium">Nome do Servidor</th>
+                                    <th class="p-4 font-medium">IP (Tailscale)</th>
+                                    <th class="p-4 font-medium">Função</th>
+                                    <th class="p-4 font-medium">Status</th>
+                                    <th class="p-4 font-medium text-right">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100" id="tbody-servidores">
+                                <!-- Preenchido dinamicamente via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section: Pontos de Dados -->
+            <section id="sec-pontos-dados" class="section-content hidden">
+                <div class="grid grid-cols-1 xl:grid-cols-5 gap-6">
+                    <!-- Mapa de Cadastro -->
+                    <div class="card p-0 xl:col-span-3 flex flex-col h-[500px] border border-slate-200 shadow-sm">
+                        <div class="p-4 border-b border-slate-100 flex items-center gap-3 bg-white">
+                            <i data-lucide="map" class="text-primary w-5 h-5"></i>
+                            <h3 class="font-bold text-dark">Localização do Ponto</h3>
+                            <span class="text-xs text-slate-500 ml-auto hidden sm:inline bg-slate-100 px-2 py-1 rounded">Clique no mapa para marcar</span>
+                        </div>
+                        <!-- Container do Leaflet -->
+                        <div id="map-container" class="flex-1 w-full bg-slate-200 relative z-0"></div>
+                    </div>
+                    
+                    <!-- Formulário de Cadastro -->
+                    <div class="card p-0 xl:col-span-2 flex flex-col border border-slate-200 shadow-sm h-fit">
+                        <div class="p-5 border-b border-slate-100 bg-white">
+                            <h3 class="font-bold text-dark">Cadastro de Ponto de Dados</h3>
+                        </div>
+                        <div class="p-5 bg-white rounded-b-xl">
+                            <form id="form-cadastrar-ponto" class="space-y-4">
+                                <div>
+                                    <label for="pt-nome" class="block text-sm font-medium text-slate-700 mb-1">Nome do Ponto</label>
+                                    <input type="text" id="pt-nome" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-shadow" placeholder="Ex: Rio Una - Ponte Nova" required>
+                                </div>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="pt-lat" class="block text-sm font-medium text-slate-700 mb-1">Latitude</label>
+                                        <input type="text" id="pt-lat" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary outline-none bg-slate-50 text-slate-600" readonly placeholder="No mapa" required>
+                                    </div>
+                                    <div>
+                                        <label for="pt-lng" class="block text-sm font-medium text-slate-700 mb-1">Longitude</label>
+                                        <input type="text" id="pt-lng" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary outline-none bg-slate-50 text-slate-600" readonly placeholder="No mapa" required>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label for="pt-tipo" class="block text-sm font-medium text-slate-700 mb-1">Tipo de Medição</label>
+                                    <select id="pt-tipo" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary outline-none bg-white">
+                                        <option value="nivel">Medidor de Nível do Rio (m)</option>
+                                        <option value="temperatura" disabled>Medidor de Temperatura (°C) - Em breve</option>
+                                        <option value="chuva" disabled>Índice Pluviométrico (mm) - Em breve</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="pt-cidade" class="block text-sm font-medium text-slate-700 mb-1">Cidade / Região</label>
+                                    <input type="text" id="pt-cidade" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary outline-none" placeholder="Ex: Taubaté - SP" required>
+                                </div>
+                                <div class="pt-2">
+                                    <button type="submit" class="w-full bg-primary hover:bg-sky-700 text-white font-medium py-2.5 rounded-lg transition-colors flex justify-center items-center gap-2 shadow-sm">
+                                        <i data-lucide="plus-circle" class="w-4 h-4"></i>
+                                        Cadastrar Ponto
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tabela de Pontos Mockados -->
+                <div class="card p-0 mt-6 border border-slate-200 shadow-sm" id="card-pontos-lista">
+                    <div class="p-5 border-b border-slate-100 bg-white">
+                        <h3 class="font-bold text-dark">Pontos Cadastrados (Sessão Atual)</h3>
+                    </div>
+                    <div class="overflow-x-auto w-full rounded-b-xl">
+                        <table class="w-full text-left text-sm min-w-[600px] bg-white">
+                            <thead>
+                                <tr class="text-slate-500 border-b border-slate-200 bg-slate-50">
+                                    <th class="p-4 font-medium">Nome</th>
+                                    <th class="p-4 font-medium">Localização</th>
+                                    <th class="p-4 font-medium">Coordenadas</th>
+                                    <th class="p-4 font-medium">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100" id="tbody-pontos">
+                                <!-- Preenchido dinamicamente -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section: Inserir Dados -->
+            <section id="sec-inserir-dados" class="section-content hidden">
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    <!-- Form de Envio -->
+                    <div class="card p-6 border border-slate-200 shadow-sm">
+                        <div class="flex items-center gap-3 mb-2 border-b border-slate-100 pb-4">
+                            <i data-lucide="activity" class="text-primary w-6 h-6"></i>
+                            <h3 class="text-lg font-bold text-dark">Inserção Manual de Medições</h3>
+                        </div>
+                        <p class="text-sm text-slate-500 mb-6">Simule o envio de dados que normalmente seria feito pelo hardware dos sensores para o servidor HOST.</p>
+                        
+                        <form id="form-inserir-dado" class="space-y-5">
+                            <div>
+                                <label for="dado-ponto" class="block text-sm font-medium text-slate-700 mb-1">Selecione o Ponto</label>
+                                <select id="dado-ponto" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-primary outline-none bg-white">
+                                    <!-- Options populated by JS -->
+                                </select>
+                            </div>
+                            
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="dado-valor" class="block text-sm font-medium text-slate-700 mb-1">Valor Medido</label>
+                                    <div class="relative">
+                                        <input type="number" step="0.01" id="dado-valor" class="w-full border border-slate-300 rounded-lg pl-3 pr-10 py-2.5 text-sm focus:ring-2 focus:ring-primary outline-none font-mono" placeholder="Ex: 2.35" required>
+                                        <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-slate-400 font-medium">
+                                            m
+                                        </div>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">Unidade</label>
+                                    <input type="text" class="w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2.5 text-sm cursor-not-allowed" value="Metros (m)" readonly>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label for="dado-obs" class="block text-sm font-medium text-slate-700 mb-1">Observação do Evento (Opcional)</label>
+                                <input type="text" id="dado-obs" class="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-primary outline-none" placeholder="Ex: Nível abaixando lentamente">
+                            </div>
+
+                            <div class="pt-3 flex flex-col sm:flex-row gap-3">
+                                <button type="submit" class="flex-1 bg-primary hover:bg-sky-700 text-white font-medium py-2.5 rounded-lg transition-colors flex justify-center items-center gap-2 shadow-sm">
+                                    <i data-lucide="send" class="w-4 h-4"></i> Enviar Dado
+                                </button>
+                                <button type="button" id="btn-dado-aleatorio" class="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 rounded-lg transition-colors flex justify-center items-center gap-2 shadow-sm">
+                                    <i data-lucide="dices" class="w-4 h-4"></i> Gerar Aleatório
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Fila RabbitMQ Simulada -->
+                    <div class="card p-0 flex flex-col shadow-lg border border-slate-700 rounded-xl overflow-hidden bg-slate-900 h-[500px] xl:h-auto">
+                        <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950 shrink-0">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="git-commit-horizontal" class="text-accent w-5 h-5"></i>
+                                <h3 class="font-bold text-white text-sm sm:text-base">Fila Simulada de Eventos</h3>
+                            </div>
+                            <span class="px-2 py-1 bg-green-500/10 text-green-400 border border-green-500/20 rounded text-[10px] sm:text-xs font-mono font-bold tracking-wide">CONSUMIDOR_ATIVO</span>
+                        </div>
+                        <div class="p-4 flex-1 overflow-y-auto font-mono text-[11px] sm:text-xs space-y-3 bg-[#0a0f1c] scroll-smooth" id="log-fila">
+                            <div class="flex flex-col text-slate-400 pb-2 border-b border-slate-800/50">
+                                <span class="text-sky-400">>[INFO] Inicializando worker de mensageria...</span>
+                                <span class="text-sky-400">>[INFO] Conectado ao cluster distribuído (Simulação).</span>
+                                <span>>[SYSTEM] Escutando no tópico exchange: 'telemetria.agua.nivel'</span>
+                                <span>>[SYSTEM] Aguardando novos dados...</span>
+                            </div>
+                            <!-- Logs injetados via JS -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Section: Alertas -->
+            <section id="sec-alertas" class="section-content hidden">
+                <div class="mb-6 flex flex-col sm:flex-row justify-between sm:items-end gap-4 bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+                    <div>
+                        <div class="flex items-center gap-2 mb-1">
+                            <i data-lucide="siren" class="text-orange-500 w-6 h-6"></i>
+                            <h2 class="text-xl font-bold text-dark">Alertas Operacionais</h2>
+                        </div>
+                        <p class="text-sm text-slate-500">Monitoramento de níveis críticos baseado nas medições recebidas.</p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3  text-xs font-medium">
+                        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-50 border border-slate-100"><span class="w-3 h-3 rounded-full bg-green-500"></span> Normal</div>
+                        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-50 border border-slate-100"><span class="w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.5)]"></span> Atenção</div>
+                        <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-50 border border-slate-100"><span class="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]"></span> Crítico</div>
+                    </div>
+                </div>
+
+                <div class="card p-0 overflow-hidden border border-slate-200 shadow-sm">
+                    <div class="overflow-x-auto w-full">
+                        <table class="w-full text-left border-collapse min-w-[800px] bg-white">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider border-b border-slate-200">
+                                    <th class="p-4 font-medium w-12 text-center">Risco</th>
+                                    <th class="p-4 font-medium">Ponto de Monitoramento</th>
+                                    <th class="p-4 font-medium">Nível Atual</th>
+                                    <th class="p-4 font-medium">Situação</th>
+                                    <th class="p-4 font-medium">Horário (Detecção)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100" id="tbody-alertas">
+                                <!-- Injetado via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Scripts (Graficos e Funcionalidade) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/assets/js/app.js"></script>
+</body>
+</html>

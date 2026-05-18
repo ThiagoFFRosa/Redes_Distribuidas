@@ -30,26 +30,31 @@ app.use(
 );
 
 app.get('/', (req, res) => {
-  if (!req.session.user) {
-    return res.redirect('/login.html');
-  }
-
-  return res.redirect('/admin.html');
+  res.sendFile(path.join(publicPath, 'index.html'));
 });
 
-app.get('/login.html', (req, res) => {
+app.get('/login', (req, res) => {
   res.sendFile(path.join(publicPath, 'login.html'));
 });
 
-app.get('/admin.html', requireAuth, (req, res) => {
-  res.sendFile(path.join(publicPath, 'admin.html'));
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(publicPath, 'dashboard.html'));
+});
+
+// Rotas legadas mantidas para compatibilidade
+app.get('/login.html', (req, res) => {
+  res.redirect('/login');
+});
+
+app.get('/admin.html', (req, res) => {
+  res.redirect('/dashboard');
 });
 
 app.use('/assets', express.static(path.join(publicPath, 'assets')));
 
 app.use('/api/auth', authRoutes);
 app.use('/internal', clusterRoutes);
-app.use('/api/servers', requireAuth, serverRoutes);
+app.use('/api/servers', serverRoutes);
 app.use('/api/ngrok', requireAuth, ngrokRoutes);
 app.use('/api/inmet', requireAuth, inmetRoutes);
 
