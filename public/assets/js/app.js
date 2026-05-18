@@ -510,6 +510,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
 
+
+    const renderJoinSelfData = (selfNode) => {
+        const btn = document.getElementById('btn-request-join-host');
+        const nameEl = document.getElementById('join-self-node-name');
+        const ipEl = document.getElementById('join-self-node-ip');
+        const urlEl = document.getElementById('join-self-public-url');
+        const roleEl = document.getElementById('join-self-requested-role');
+        const feedback = document.getElementById('join-host-feedback');
+        if (!nameEl || !ipEl || !urlEl || !roleEl) return;
+        if (!selfNode) {
+            nameEl.textContent = '-'; ipEl.textContent = '-'; urlEl.textContent = '-'; roleEl.textContent = 'STANDBY';
+            if (btn) btn.disabled = true;
+            if (feedback) feedback.textContent = 'Configure este servidor antes de solicitar entrada em um host.';
+            return;
+        }
+        nameEl.textContent = selfNode.node_name || '-';
+        ipEl.textContent = selfNode.tailscale_ip || '-';
+        urlEl.textContent = selfNode.public_url || '-';
+        roleEl.textContent = 'STANDBY';
+        if (btn) btn.disabled = false;
+    };
+
     const loadJoinRequests = async () => {
         const resp = await fetch('/api/cluster/join-requests?status=PENDING');
         if (!resp.ok) return;
@@ -545,13 +567,15 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         const feedback = document.getElementById('join-host-feedback');
         feedback.textContent = '';
-        const payload = { host_url: document.getElementById('join-host-url').value.trim(), node_name: document.getElementById('join-node-name').value.trim(), tailscale_ip: document.getElementById('join-node-ip').value.trim(), public_url: document.getElementById('join-public-url').value.trim(), requested_role: document.getElementById('join-requested-role').value };
+        const payload = { host_url: document.getElementById('join-host-url').value.trim() };
         const resp = await fetch('/api/cluster/request-join-host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         const data = await resp.json().catch(() => ({}));
-        feedback.textContent = resp.ok ? 'Solicitação enviada. Aguarde aprovação no host.' : (data.message || 'Falha ao enviar solicitação.');
+        feedback.textContent = resp.ok ? (data.message || 'Solicitação enviada. Aguarde aprovação no host.') : (data.message || 'Falha ao enviar solicitação.');
     });
 
     // --- Inits Globais ---
+    fetch('/api/cluster/self').then((r) => r.ok ? r.json() : null).then((d) => renderJoinSelfData(d?.node || null)).catch(() => renderJoinSelfData(null));
+
     fetchClusterNodes().finally(async () => {
         renderServidores();
         initCards();
