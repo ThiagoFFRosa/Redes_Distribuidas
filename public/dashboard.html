@@ -223,9 +223,10 @@
                             <h3 class="font-bold text-dark text-lg">Servidores do Cluster</h3>
                             <p class="text-sm text-slate-500 mt-1">Gerencie a arquitetura distribuída e os nós de processamento.</p>
                         </div>
-                        <button class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 whitespace-nowrap">
-                            <i data-lucide="refresh-cw" class="w-4 h-4"></i> Atualizar Status
-                        </button>
+                        <div class="flex gap-2">
+                        <button id="add-server-btn" class="bg-secondary hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-sm font-medium">Adicionar servidor</button>
+                        <button id="refresh-health-btn" class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Atualizar Status</button>
+                        </div>
                     </div>
                     <div class="overflow-x-auto w-full">
                         <table class="w-full text-left border-collapse min-w-[700px]">
@@ -460,5 +461,19 @@
   </div>
 </div>
 
+
+<div id="add-server-modal" class="fixed inset-0 bg-slate-950/60 z-50 hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-xl max-w-xl w-full p-6 border border-slate-200">
+    <h3 class="text-xl font-bold text-dark">Adicionar servidor</h3>
+    <form id="add-server-form" class="space-y-3 mt-4">
+      <input id="add-node-name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome do servidor" required />
+      <input id="add-node-ip" class="w-full border rounded-lg px-3 py-2" placeholder="IP Tailscale" required />
+      <input id="add-public-url" class="w-full border rounded-lg px-3 py-2" placeholder="URL pública/ngrok (opcional)" />
+      <select id="add-role" class="w-full border rounded-lg px-3 py-2"><option value="HOST">HOST</option><option value="STANDBY">STANDBY</option><option value="UNKNOWN" selected>UNKNOWN</option></select>
+      <div id="add-server-error" class="text-sm text-red-600"></div>
+      <div class="flex gap-2"><button type="button" id="close-add-server-modal" class="w-1/2 border px-4 py-2 rounded-lg">Cancelar</button><button type="submit" class="w-1/2 bg-primary text-white px-4 py-2 rounded-lg">Salvar</button></div>
+    </form>
+  </div>
+</div>
 </body>
 </html>

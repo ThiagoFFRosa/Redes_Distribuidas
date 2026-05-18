@@ -14,6 +14,22 @@ class ClusterNodeRepository {
     return rows.map(mapNode);
   }
 
+
+  async getExternalNodes() {
+    const [rows] = await db.execute('SELECT * FROM cluster_nodes WHERE is_self = 0 ORDER BY node_name ASC');
+    return rows.map(mapNode);
+  }
+
+  async getKnownHosts() {
+    const [rows] = await db.execute("SELECT * FROM cluster_nodes WHERE role = 'HOST' ORDER BY is_self DESC, node_name ASC");
+    return rows.map(mapNode);
+  }
+
+  async getOnlineHosts() {
+    const [rows] = await db.execute("SELECT * FROM cluster_nodes WHERE role = 'HOST' AND status = 'ONLINE' ORDER BY is_self DESC, node_name ASC");
+    return rows.map(mapNode);
+  }
+
   async findById(id) {
     const [rows] = await db.execute('SELECT * FROM cluster_nodes WHERE id = ? LIMIT 1', [id]);
     return rows[0] ? mapNode(rows[0]) : null;
@@ -22,6 +38,51 @@ class ClusterNodeRepository {
   async findByTailscaleIp(ip) {
     const [rows] = await db.execute('SELECT * FROM cluster_nodes WHERE tailscale_ip = ? LIMIT 1', [ip]);
     return rows[0] ? mapNode(rows[0]) : null;
+  }
+
+
+  async upsertNodeByTailscaleIp(data) {
+    const existing = await this.findByTailscaleIp(data.tailscale_ip);
+    if (existing) return this.updateNode(existing.id, { ...existing, ...data, is_self: Number(data.is_self ?? existing.is_self) });
+    return this.createNode({
+      node_name: data.node_name,
+      tailscale_ip: data.tailscale_ip,
+      public_url: data.public_url || null,
+      role: data.role || 'UNKNOWN',
+      status: data.status || 'UNKNOWN',
+      is_self: Number(data.is_self || 0),
+      last_heartbeat_at: data.last_heartbeat_at || null,
+      last_healthcheck_at: data.last_healthcheck_at || null,
+      healthcheck_error: data.healthcheck_error || null,
+      metadata: data.metadata || null
+    });
+  }
+
+  async updateStatus(id, status, error = null) {
+    const current = await this.findById(id);
+    if (!current) return null;
+    const now = new Date();
+    return this.updateNode(id, {
+      ...current,
+      status,
+      last_healthcheck_at: now,
+      last_heartbeat_at: status === 'ONLINE' ? now : current.last_heartbeat_at,
+      healthcheck_error: error
+    });
+  }
+
+  async setSelfNode(data) {
+    await this.clearSelfFlag();
+    const now = new Date();
+    const payload = {
+      ...data,
+      is_self: 1,
+      status: data.status || 'ONLINE',
+      last_healthcheck_at: now,
+      last_heartbeat_at: now,
+      healthcheck_error: null
+    };
+    return this.upsertNodeByTailscaleIp(payload);
   }
 
   async clearSelfFlag() { await db.execute('UPDATE cluster_nodes SET is_self = 0 WHERE is_self = 1'); }

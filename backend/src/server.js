@@ -4,8 +4,9 @@ const session = require('express-session');
 
 const env = require('./config/env');
 const { requireAuth } = require('./services/auth.service');
-const clusterService = require('./services/cluster.service');
 const heartbeatService = require('./services/heartbeat.service');
+const clusterStartupService = require('./services/cluster-startup.service');
+const repo = require('./services/cluster-node.repository');
 
 const authRoutes = require('./routes/auth.routes');
 const serverRoutes = require('./routes/server.routes');
@@ -16,42 +17,21 @@ const clusterDbRoutes = require('./routes/cluster-db.routes');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
-
 app.use(express.json());
-app.use(
-  session({
-    secret: env.sessionSecret,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: 'lax'
-    }
-  })
-);
+app.use(session({ secret: env.sessionSecret, resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(publicPath, 'index.html'));
-});
-
-app.get('/login', (req, res) => {
-  res.sendFile(path.join(publicPath, 'login.html'));
-});
-
-app.get('/dashboard', (req, res) => {
-  res.sendFile(path.join(publicPath, 'dashboard.html'));
-});
-
-// Rotas legadas mantidas para compatibilidade
-app.get('/login.html', (req, res) => {
-  res.redirect('/login');
-});
-
-app.get('/admin.html', (req, res) => {
-  res.redirect('/dashboard');
-});
-
+app.get('/', (req, res) => res.sendFile(path.join(publicPath, 'index.html')));
+app.get('/login', (req, res) => res.sendFile(path.join(publicPath, 'login.html')));
+app.get('/dashboard', (req, res) => res.sendFile(path.join(publicPath, 'dashboard.html')));
+app.get('/login.html', (req, res) => res.redirect('/login'));
+app.get('/admin.html', (req, res) => res.redirect('/dashboard'));
 app.use('/assets', express.static(path.join(publicPath, 'assets')));
+
+app.get('/health', async (_req, res) => {
+  const selfNode = await repo.getSelfNode();
+  if (!selfNode) return res.json({ ok: true, status: 'ONLINE', configured: false, message: 'Servidor ainda não configurado no banco.' });
+  return res.json({ ok: true, status: 'ONLINE', node: { name: selfNode.node_name, tailscale_ip: selfNode.tailscale_ip, role: selfNode.role }, timestamp: new Date().toISOString() });
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/internal', clusterRoutes);
@@ -59,32 +39,16 @@ app.use('/api/servers', serverRoutes);
 app.use('/api/ngrok', requireAuth, ngrokRoutes);
 app.use('/api/inmet', requireAuth, inmetRoutes);
 app.use('/api/cluster', clusterDbRoutes);
-
-app.use((error, req, res, _next) => {
-  console.error('[server] erro não tratado:', error);
-  res.status(500).json({ message: 'Erro interno do servidor.' });
-});
+app.use((error, req, res, _next) => { console.error('[server] erro não tratado:', error); res.status(500).json({ message: 'Erro interno do servidor.' }); });
 
 const start = async () => {
-  await clusterService.makeLocalStandby();
-
-  console.log('[cluster] Consultando peers antes de iniciar ngrok...');
-  await clusterService.refreshPeers();
-  const known = clusterService.getKnownServers();
-  const activeHost = await clusterService.findValidActiveHost(known);
-
-  if (activeHost && activeHost.serverUrl !== env.serverUrl) {
-    console.log(`[cluster] HOST ativo encontrado: ${activeHost.serverName}`);
-    console.log('[cluster] HOST ativo encontrado. Iniciando como STANDBY.');
-    console.log('[cluster] Ngrok não será iniciado neste servidor');
-  } else {
-    await clusterService.electHostIfNeeded();
-  }
-
+  await clusterStartupService.initialize();
   heartbeatService.start();
-
-  app.listen(env.port, () => {
-    console.log(`[${env.serverName}] rodando em ${env.serverUrl} (porta ${env.port})`);
+  app.listen(env.port, async () => {
+    const selfNode = await repo.getSelfNode();
+    const display = selfNode?.node_name || 'server';
+    const hostIp = selfNode?.tailscale_ip || '127.0.0.1';
+    console.log(`[${display}] rodando em http://${hostIp}:${env.port} (porta ${env.port})`);
   });
 };
 

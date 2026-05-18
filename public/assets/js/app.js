@@ -369,6 +369,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const selfError = document.getElementById('self-config-error');
     const openSelfModal = () => { if (selfModal) selfModal.classList.remove('hidden'); if (selfModal) selfModal.classList.add('flex'); };
     const closeSelfModal = () => { if (selfModal) selfModal.classList.add('hidden'); if (selfModal) selfModal.classList.remove('flex'); };
+    const addModal = document.getElementById('add-server-modal');
+    const openAddModal = () => { if (addModal) { addModal.classList.remove('hidden'); addModal.classList.add('flex'); } };
+    const closeAddModal = () => { if (addModal) { addModal.classList.add('hidden'); addModal.classList.remove('flex'); } };
 
     const fetchClusterNodes = async () => {
         const selfResp = await fetch('/api/cluster/self');
@@ -400,7 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-sm font-mono text-slate-600">${s.tailscale_ip}</td>
                     <td class="p-4">${roleBadge}</td>
                     <td class="p-4">${statusInd}</td>
-                    <td class="p-4 text-right"><button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
+                    <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button>' : ''}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
                 </tr>`;
         });
     }
@@ -559,6 +562,43 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     renderEventosDash();
     renderTabelaAlertas();
+
+
+
+    document.getElementById('refresh-health-btn')?.addEventListener('click', async () => {
+        await fetch('/api/cluster/healthcheck-all', { method: 'POST' });
+        await fetchClusterNodes();
+        renderServidores();
+        initCards();
+    });
+
+    document.getElementById('add-server-btn')?.addEventListener('click', openAddModal);
+    document.getElementById('close-add-server-modal')?.addEventListener('click', closeAddModal);
+
+    document.getElementById('add-server-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const err = document.getElementById('add-server-error');
+        err.textContent = '';
+        const payload = { node_name: document.getElementById('add-node-name').value.trim(), tailscale_ip: document.getElementById('add-node-ip').value.trim(), public_url: document.getElementById('add-public-url').value.trim(), role: document.getElementById('add-role').value, status: 'UNKNOWN' };
+        const resp = await fetch('/api/cluster/nodes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) { err.textContent = data.message || 'Erro ao adicionar servidor.'; return; }
+        closeAddModal();
+        await fetchClusterNodes();
+        renderServidores();
+        initCards();
+    });
+
+    document.getElementById('tbody-servidores')?.addEventListener('click', async (e) => {
+      if (!e.target.closest('[data-action="edit-self"]')) return;
+      const self = state.servidores.find((n) => n.is_self);
+      if (!self) return;
+      document.getElementById('self-node-name').value = self.node_name || '';
+      document.getElementById('self-node-ip').value = self.tailscale_ip || '';
+      document.getElementById('self-public-url').value = self.public_url || '';
+      document.getElementById('self-role').value = self.role || 'UNKNOWN';
+      openSelfModal();
+    });
 
     // Reativar icons finais
     lucide.createIcons();
