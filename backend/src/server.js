@@ -12,6 +12,7 @@ const serverRoutes = require('./routes/server.routes');
 const clusterRoutes = require('./routes/cluster.routes');
 const ngrokRoutes = require('./routes/ngrok.routes');
 const inmetRoutes = require('./routes/inmet.routes');
+const clusterDbRoutes = require('./routes/cluster-db.routes');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -57,6 +58,7 @@ app.use('/internal', clusterRoutes);
 app.use('/api/servers', serverRoutes);
 app.use('/api/ngrok', requireAuth, ngrokRoutes);
 app.use('/api/inmet', requireAuth, inmetRoutes);
+app.use('/api/cluster', requireAuth, clusterDbRoutes);
 
 app.use((error, req, res, _next) => {
   console.error('[server] erro não tratado:', error);
