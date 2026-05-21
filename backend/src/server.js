@@ -27,6 +27,11 @@ app.get('/login.html', (req, res) => res.redirect('/login'));
 app.get('/admin.html', (req, res) => res.redirect('/dashboard'));
 app.use('/assets', express.static(path.join(publicPath, 'assets')));
 
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'custom-newtab-api' });
+});
+
 app.get('/health', async (_req, res) => {
   const selfNode = await repo.getSelfNode();
   if (!selfNode) return res.json({ ok: true, status: 'ONLINE', configured: false, message: 'Servidor ainda não configurado no banco.' });
@@ -45,6 +50,7 @@ const start = async () => {
   await clusterStartupService.initialize();
   heartbeatService.start();
   app.listen(env.port, async () => {
+    console.log(`Custom NewTab API running on http://localhost:${env.port}`);
     const selfNode = await repo.getSelfNode();
     const display = selfNode?.node_name || 'server';
     const hostIp = selfNode?.tailscale_ip || '127.0.0.1';

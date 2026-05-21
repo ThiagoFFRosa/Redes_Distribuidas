@@ -1,20 +1,42 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Custom New Tab Dashboard — Desenvolvimento
 
-# Run and deploy your AI Studio app
+## Desenvolvimento (frontend + backend juntos)
 
-This contains everything you need to run your app locally.
+1. Instale as dependências do frontend:
+   ```bash
+   npm install
+   ```
+2. Instale as dependências do backend:
+   ```bash
+   npm --prefix ../backend install
+   ```
+3. Rode frontend e backend juntos:
+   ```bash
+   npm run dev
+   ```
 
-View your app in AI Studio: https://ai.studio/apps/476bfaf8-f802-4973-b612-6765f248477d
+## URLs
 
-## Run Locally
+- Frontend: http://localhost:4177
+- Backend: http://localhost:4178
+- Healthcheck: http://localhost:4178/api/health
+- Config: http://localhost:4178/api/config
 
-**Prerequisites:**  Node.js
+## Comandos separados
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- Frontend (dev):
+  ```bash
+  npm run dev:frontend
+  ```
+- Backend (dev):
+  ```bash
+  npm run dev:backend
+  ```
+- Frontend (preview):
+  ```bash
+  npm run start:frontend
+  ```
+- Backend (start):
+  ```bash
+  npm run start:backend
+  ```
