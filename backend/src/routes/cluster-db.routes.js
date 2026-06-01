@@ -92,6 +92,13 @@ router.post('/join-request', async (req, res) => {
   }
 });
 
+
+router.get('/self-identity', async (_req, res) => {
+  const self = await repo.getSelfNode();
+  if (!self) return res.status(404).json({ ok: false, message: 'Servidor self não configurado.' });
+  res.json({ ok: true, node_uuid: self.node_uuid, node_name: self.node_name, tailscale_ip: self.tailscale_ip, role: self.role });
+});
+
 router.get('/bootstrap', async (req, res) => {
   if (!env.sessionSecret) return res.status(500).json({ ok: false, message: 'SESSION_SECRET não configurado no host.' });
   const secret = req.header('x-cluster-secret');

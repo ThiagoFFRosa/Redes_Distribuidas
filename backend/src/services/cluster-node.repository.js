@@ -1,4 +1,7 @@
+const crypto = require('crypto');
 const db = require('../database/connection');
+const syncEventService = require('./sync-event.service');
+const syncPayloadService = require('./sync-payload.service');
 
 const mapNode = (row) => ({ ...row, is_self: Number(row.is_self), power_score: Number(row.power_score ?? 5) });
 
@@ -40,11 +43,17 @@ class ClusterNodeRepository {
     return rows[0] ? mapNode(rows[0]) : null;
   }
 
+  async findByNodeUuid(nodeUuid) {
+    const [rows] = await db.execute('SELECT * FROM cluster_nodes WHERE node_uuid = ? LIMIT 1', [nodeUuid]);
+    return rows[0] ? mapNode(rows[0]) : null;
+  }
+
 
   async upsertNodeByTailscaleIp(data) {
     const existing = await this.findByTailscaleIp(data.tailscale_ip);
     if (existing) return this.updateNode(existing.id, { ...existing, ...data, is_self: Number(data.is_self ?? existing.is_self) });
     return this.createNode({
+      node_uuid: data.node_uuid,
       node_name: data.node_name,
       tailscale_ip: data.tailscale_ip,
       public_url: data.public_url || null,
@@ -91,17 +100,25 @@ class ClusterNodeRepository {
 
   async createNode(payload) {
     const [result] = await db.execute(`INSERT INTO cluster_nodes
-      (node_name, tailscale_ip, public_url, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5]);
-    return this.findById(result.insertId);
+      (node_uuid, node_name, tailscale_ip, public_url, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5]);
+    const node = await this.findById(result.insertId);
+    const syncPayload = await syncPayloadService.getClusterNodePayloadById(node.id);
+    await syncEventService.createEntitySyncEvent('cluster_node', syncPayload);
+    return node;
   }
 
   async updateNode(id, payload) {
-    await db.execute(`UPDATE cluster_nodes SET node_name=?, tailscale_ip=?, public_url=?, role=?, status=?, is_self=?,
+    await db.execute(`UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, role=?, status=?, is_self=?,
       last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=? WHERE id=?`,
-    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5, id]);
-    return this.findById(id);
+    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5, id]);
+    const node = await this.findById(id);
+    if (node) {
+      const syncPayload = await syncPayloadService.getClusterNodePayloadById(id);
+      await syncEventService.createEntitySyncEvent('cluster_node', syncPayload);
+    }
+    return node;
   }
 
   async deleteNode(id) { await db.execute('DELETE FROM cluster_nodes WHERE id=?', [id]); }

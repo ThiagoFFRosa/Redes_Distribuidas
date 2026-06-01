@@ -24,7 +24,8 @@ const importRoutes = require('./routes/import.routes');
 const syncRoutes = require('./routes/sync.routes');
 const processingRoutes = require('./routes/processing.routes');
 const chartWorker = require('./services/chart-worker.service');
-const syncOutboxWorker = require('./services/sync-outbox-worker.service');
+const syncWorker = require('./services/sync-worker');
+const syncEventService = require('./services/sync-event.service');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -68,9 +69,10 @@ app.use((error, req, res, _next) => { console.error('[server] erro não tratado:
 
 const start = async () => {
   await clusterStartupService.initialize();
+  await syncEventService.backfillExistingSyncEvents().catch((error) => console.error('[sync] backfill inicial falhou:', error.message));
   heartbeatService.start();
   chartWorker.start();
-  syncOutboxWorker.start();
+  syncWorker.start();
   app.listen(env.port, async () => {
     console.log(`Custom NewTab API running on http://localhost:${env.port}`);
     const selfNode = await repo.getSelfNode();
