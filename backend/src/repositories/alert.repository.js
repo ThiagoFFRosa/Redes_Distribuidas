@@ -1,6 +1,14 @@
 const pool = require('../database/connection');
 
-const parse = (row) => row && ({ ...row, current_value: Number(row.current_value) });
+const toNullableNumber = (value) => (value == null ? null : Number(value));
+
+const parse = (row) => row && ({
+  ...row,
+  current_value: Number(row.current_value),
+  warning_level: toNullableNumber(row.warning_level),
+  critical_level: toNullableNumber(row.critical_level),
+  measurement_unit: row.measurement_unit || row.unit || 'm'
+});
 
 const findAll = async ({ status, severity, limit = 100 } = {}) => {
   const where = [];
@@ -9,7 +17,7 @@ const findAll = async ({ status, severity, limit = 100 } = {}) => {
   if (severity) { where.push('a.severity = ?'); params.push(severity); }
   const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
   const [rows] = await pool.execute(
-    `SELECT a.*, dp.name AS data_point_name, dp.city_region
+    `SELECT a.*, dp.name AS data_point_name, dp.city_region, dp.warning_level, dp.critical_level, dp.measurement_unit
      FROM alerts a
      JOIN data_points dp ON dp.id = a.data_point_id
      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}

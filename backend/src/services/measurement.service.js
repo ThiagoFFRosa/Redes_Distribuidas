@@ -38,7 +38,7 @@ const createMeasurement = async (payload, userId = null) => {
     data_point_id: dataPointId,
     measurement_type: payload.measurement_type || 'RIVER_LEVEL',
     value,
-    unit: payload.unit || 'm',
+    unit: point.measurement_unit || payload.unit || 'm',
     measured_at: measuredAt,
     source: payload.source || 'MANUAL',
     observation: payload.observation || null,
@@ -50,12 +50,24 @@ const createMeasurement = async (payload, userId = null) => {
   });
 
   let alert = null;
-  if (value >= 5) {
-    const alertId = await alertRepository.create({ data_point_id: dataPointId, measurement_id: measurement.id, alert_type: 'RIVER_LEVEL_CRITICAL', severity: 'CRITICAL', current_value: value, unit: payload.unit || 'm', message: 'Nível crítico detectado', detected_at: measuredAt });
+  let warningLevel = point.warning_level;
+  let criticalLevel = point.critical_level;
+  const hasConfiguredThresholds = warningLevel !== null && warningLevel !== undefined && criticalLevel !== null && criticalLevel !== undefined;
+
+  if (!hasConfiguredThresholds) {
+    console.warn('[alerts] ponto sem thresholds configurados, usando fallback genérico.');
+    warningLevel = warningLevel ?? 3.5;
+    criticalLevel = criticalLevel ?? 5.0;
+  }
+
+  const alertUnit = point.measurement_unit || payload.unit || 'm';
+
+  if (criticalLevel !== null && criticalLevel !== undefined && value >= Number(criticalLevel)) {
+    const alertId = await alertRepository.create({ data_point_id: dataPointId, measurement_id: measurement.id, alert_type: 'RIVER_LEVEL_CRITICAL', severity: 'CRITICAL', current_value: value, unit: alertUnit, message: 'Nível crítico detectado', detected_at: measuredAt });
     alert = { id: alertId, severity: 'CRITICAL', message: 'Nível crítico detectado' };
-  } else if (value >= 3.5) {
-    const alertId = await alertRepository.create({ data_point_id: dataPointId, measurement_id: measurement.id, alert_type: 'RIVER_LEVEL_HIGH', severity: 'ATTENTION', current_value: value, unit: payload.unit || 'm', message: 'Nível acima do normal', detected_at: measuredAt });
-    alert = { id: alertId, severity: 'ATTENTION', message: 'Nível acima do normal' };
+  } else if (warningLevel !== null && warningLevel !== undefined && value >= Number(warningLevel)) {
+    const alertId = await alertRepository.create({ data_point_id: dataPointId, measurement_id: measurement.id, alert_type: 'RIVER_LEVEL_HIGH', severity: 'ATTENTION', current_value: value, unit: alertUnit, message: 'Nível acima do limite de risco', detected_at: measuredAt });
+    alert = { id: alertId, severity: 'ATTENTION', message: 'Nível acima do limite de risco' };
   }
 
   await eventQueueRepository.create({

@@ -6,7 +6,28 @@ const router = express.Router();
 const allowedTypes = new Set(['RIVER_LEVEL']);
 const allowedStatuses = new Set(['ACTIVE', 'INACTIVE']);
 
+const optionalNumber = (value) => {
+  if (value === undefined || value === null || value === '') return { value: null };
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < 0) return { error: 'Os níveis devem ser valores numéricos positivos.' };
+  return { value: numberValue };
+};
+
 const validatePayload = (body) => {
+  const normal = optionalNumber(body.normal_level);
+  const warning = optionalNumber(body.warning_level);
+  const critical = optionalNumber(body.critical_level);
+
+  if (normal.error) return { error: normal.error };
+  if (warning.error) return { error: warning.error };
+  if (critical.error) return { error: critical.error };
+  if (warning.value !== null && critical.value !== null && critical.value <= warning.value) {
+    return { error: 'O nível crítico deve ser maior que o nível de risco.' };
+  }
+  if (normal.value !== null && warning.value !== null && warning.value <= normal.value) {
+    return { error: 'O nível de risco deve ser maior que o nível normal.' };
+  }
+
   const payload = {
     name: (body.name || '').trim(),
     type: body.type || 'RIVER_LEVEL',
@@ -14,7 +35,11 @@ const validatePayload = (body) => {
     longitude: Number(body.longitude),
     city_region: body.city_region || null,
     description: body.description || null,
-    status: body.status || 'ACTIVE'
+    status: body.status || 'ACTIVE',
+    normal_level: normal.value,
+    warning_level: warning.value,
+    critical_level: critical.value,
+    measurement_unit: (body.measurement_unit || 'm').trim() || 'm'
   };
   if (!payload.name) return { error: 'name é obrigatório.' };
   if (!Number.isFinite(payload.latitude)) return { error: 'latitude obrigatória e numérica.' };

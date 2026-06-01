@@ -1,8 +1,20 @@
 const points = [
-  ['Rio Paraíba do Sul - Centro', -23.1868, -45.8866, 'SJC - SP', 'Ponto central de monitoramento do Rio Paraíba do Sul.'],
-  ['Rio Tietê - Ponto 42', -23.518, -46.732, 'São Paulo - SP', 'Ponto urbano de acompanhamento do nível do Rio Tietê.'],
-  ['Represa Guarapiranga', -23.682, -46.733, 'São Paulo - SP', 'Monitoramento de variação de nível da represa.'],
-  ['Rio Una - Ponte Nova', -23.03, -45.56, 'Taubaté - SP', 'Ponto de risco próximo à Ponte Nova.']
+  {
+    name: 'Rio Paraíba do Sul - Centro', latitude: -23.1868, longitude: -45.8866, cityRegion: 'SJC - SP', description: 'Ponto central de monitoramento do Rio Paraíba do Sul.',
+    normalLevel: 2.0, warningLevel: 3.5, criticalLevel: 5.0, measurementUnit: 'm'
+  },
+  {
+    name: 'Rio Tietê - Ponto 42', latitude: -23.518, longitude: -46.732, cityRegion: 'São Paulo - SP', description: 'Ponto urbano de acompanhamento do nível do Rio Tietê.',
+    normalLevel: 1.8, warningLevel: 3.0, criticalLevel: 4.5, measurementUnit: 'm'
+  },
+  {
+    name: 'Represa Guarapiranga', latitude: -23.682, longitude: -46.733, cityRegion: 'São Paulo - SP', description: 'Monitoramento de variação de nível da represa.',
+    normalLevel: 3.0, warningLevel: 4.0, criticalLevel: 4.8, measurementUnit: 'm'
+  },
+  {
+    name: 'Rio Una - Ponte Nova', latitude: -23.03, longitude: -45.56, cityRegion: 'Taubaté - SP', description: 'Ponto de risco próximo à Ponte Nova.',
+    normalLevel: 2.2, warningLevel: 3.2, criticalLevel: 5.0, measurementUnit: 'm'
+  }
 ];
 
 const nowMinusHours = (hours) => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
@@ -13,19 +25,28 @@ module.exports = {
     await connection.execute('SELECT 1 FROM data_points LIMIT 1');
     const pointIds = new Map();
 
-    for (const [name, latitude, longitude, cityRegion, description] of points) {
-      const [existing] = await connection.execute('SELECT id FROM data_points WHERE name = ? LIMIT 1', [name]);
+    for (const point of points) {
+      const [existing] = await connection.execute('SELECT id FROM data_points WHERE name = ? LIMIT 1', [point.name]);
       if (existing.length) {
-        pointIds.set(name, existing[0].id);
+        pointIds.set(point.name, existing[0].id);
+        await connection.execute(
+          `UPDATE data_points
+              SET normal_level = COALESCE(normal_level, ?),
+                  warning_level = COALESCE(warning_level, ?),
+                  critical_level = COALESCE(critical_level, ?),
+                  measurement_unit = COALESCE(NULLIF(measurement_unit, ''), ?)
+            WHERE id = ?`,
+          [point.normalLevel, point.warningLevel, point.criticalLevel, point.measurementUnit, existing[0].id]
+        );
         continue;
       }
       const [result] = await connection.execute(
-        `INSERT INTO data_points (name, type, latitude, longitude, city_region, description, status)
-         VALUES (?, 'RIVER_LEVEL', ?, ?, ?, ?, 'ACTIVE')`,
-        [name, latitude, longitude, cityRegion, description]
+        `INSERT INTO data_points (name, type, latitude, longitude, city_region, description, status, normal_level, warning_level, critical_level, measurement_unit)
+         VALUES (?, 'RIVER_LEVEL', ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?)`,
+        [point.name, point.latitude, point.longitude, point.cityRegion, point.description, point.normalLevel, point.warningLevel, point.criticalLevel, point.measurementUnit]
       );
-      pointIds.set(name, result.insertId);
-      console.log(`[seed] ponto criado: ${name}`);
+      pointIds.set(point.name, result.insertId);
+      console.log(`[seed] ponto criado: ${point.name}`);
     }
 
     const measurements = [
@@ -50,7 +71,7 @@ module.exports = {
     }
 
     const alertSeeds = [
-      ['Represa Guarapiranga', 'RIVER_LEVEL_HIGH', 'ATTENTION', 3.8, 'Nível acima do normal'],
+      ['Rio Tietê - Ponto 42', 'RIVER_LEVEL_HIGH', 'ATTENTION', 3.25, 'Nível acima do limite de risco'],
       ['Rio Una - Ponte Nova', 'RIVER_LEVEL_CRITICAL', 'CRITICAL', 5.15, 'Nível crítico detectado']
     ];
 
@@ -64,7 +85,7 @@ module.exports = {
       await connection.execute(
         `INSERT INTO alerts (data_point_id, alert_type, severity, current_value, unit, message, status, detected_at)
          VALUES (?, ?, ?, ?, 'm', ?, 'ACTIVE', ?)`,
-        [pointId, alertType, severity, value, message, nowMinusHours(severity === 'CRITICAL' ? 1 : 3)]
+        [pointId, alertType, severity, value, message, nowMinusHours(severity === 'CRITICAL' ? 1 : 2)]
       );
     }
 
