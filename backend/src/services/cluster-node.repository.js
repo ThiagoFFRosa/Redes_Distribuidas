@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const db = require('../database/connection');
 const syncEventService = require('./sync-event.service');
 const syncPayloadService = require('./sync-payload.service');
+const { toMysqlDateTime } = require('../utils/mysql-date');
 
 const asNumber = (value, fallback = null) => {
   if (value === undefined || value === null || value === '') return fallback;
@@ -107,8 +108,8 @@ class ClusterNodeRepository {
       role: data.role || existing?.role || 'UNKNOWN',
       status: data.status || existing?.status || 'UNKNOWN',
       is_self: isSelf,
-      last_heartbeat_at: data.last_heartbeat_at ?? existing?.last_heartbeat_at ?? null,
-      last_healthcheck_at: data.last_healthcheck_at ?? existing?.last_healthcheck_at ?? null,
+      last_heartbeat_at: toMysqlDateTime(data.last_heartbeat_at) ?? existing?.last_heartbeat_at ?? null,
+      last_healthcheck_at: toMysqlDateTime(data.last_healthcheck_at) ?? existing?.last_healthcheck_at ?? null,
       healthcheck_error: data.healthcheck_error ?? existing?.healthcheck_error ?? null,
       metadata: toJsonValue(data.metadata ?? existing?.metadata ?? null),
       power_score: asNumber(data.power_score, existing?.power_score ?? 5)

@@ -2,6 +2,7 @@ const pool = require('../database/connection');
 const env = require('../config/env');
 const repo = require('./cluster-node.repository');
 const applyService = require('./sync-apply.service');
+const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
 
 const normalizeBaseUrl = (node) => {
   const raw = node?.base_url || node?.public_url || (node?.tailscale_ip ? `http://${node.tailscale_ip}:${node.port || env.port}` : '');
@@ -52,8 +53,8 @@ const applyBootstrapNodes = async (nodes = []) => {
       is_self: isSelf ? 1 : 0,
       power_score: asInt(node.power_score, 5),
       metadata: parseMetadata(node.metadata),
-      last_heartbeat_at: node.last_heartbeat_at || null,
-      last_healthcheck_at: node.last_healthcheck_at || null,
+      last_heartbeat_at: toMysqlDateTime(node.last_heartbeat_at),
+      last_healthcheck_at: toMysqlDateTime(node.last_healthcheck_at),
       healthcheck_error: node.healthcheck_error || null
     }, { skipSyncEvent: true });
   }
@@ -79,18 +80,42 @@ const listEvents = async ({ since = null, limit = 500 } = {}) => {
   const safeLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
   const params = [];
   let where = '';
-  if (since) { where = 'WHERE created_at > ?'; params.push(new Date(since).toISOString().slice(0, 19).replace('T', ' ')); }
+  if (since) {
+    const sinceMysql = toMysqlDateTime(since);
+    if (!sinceMysql) {
+      const error = new Error('Parâmetro since inválido para /api/sync/events. Use ISO 8601 ou YYYY-MM-DD HH:mm:ss.');
+      error.statusCode = 400;
+      throw error;
+    }
+    where = 'WHERE created_at > ?';
+    params.push(sinceMysql);
+  }
   const [rows] = await pool.execute(`SELECT * FROM sync_events ${where} ORDER BY created_at ASC, id ASC LIMIT ${safeLimit}`, params);
   return rows.map((row) => ({ ...row, payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload }));
 };
 
-const updateCursor = async (remoteNodeUuid, lastSeen, error = null) => {
-  await pool.execute(
-    `INSERT INTO sync_node_cursors (remote_node_uuid, last_seen_event_created_at, last_sync_at, last_error)
-     VALUES (?, ?, NOW(), ?)
-     ON DUPLICATE KEY UPDATE last_seen_event_created_at=COALESCE(VALUES(last_seen_event_created_at), last_seen_event_created_at), last_sync_at=NOW(), last_error=VALUES(last_error)`,
-    [remoteNodeUuid, lastSeen || null, error]
-  );
+const updateCursor = async (remoteNodeUuid, lastSeen, error = null, options = {}) => {
+  const lastSeenMysql = toMysqlDateTime(lastSeen);
+  const syncAt = nowMysql();
+  try {
+    await pool.execute(
+      `INSERT INTO sync_node_cursors (remote_node_uuid, last_seen_event_created_at, last_sync_at, last_error)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         last_seen_event_created_at=COALESCE(VALUES(last_seen_event_created_at), last_seen_event_created_at),
+         last_sync_at=VALUES(last_sync_at),
+         last_error=VALUES(last_error)`,
+      [remoteNodeUuid, lastSeenMysql, syncAt, error]
+    );
+    if (!error && lastSeen) {
+      console.log(`[sync] cursor atualizado para ${options.nodeName || remoteNodeUuid} em ${lastSeenMysql}`);
+    }
+  } catch (cursorError) {
+    console.error(`[sync] erro ao atualizar cursor do node ${options.nodeName || remoteNodeUuid}`);
+    console.error(`[sync] valor recebido last_seen_event_created_at: ${lastSeen || null}`);
+    console.error(`[sync] valor convertido: ${lastSeenMysql}`);
+    throw cursorError;
+  }
 };
 
 const getCursor = async (remoteNodeUuid) => {
@@ -104,10 +129,11 @@ const pullFromNode = async ({ node_uuid, base_url, limit = 500 }) => {
   const cursor = remoteUuid ? await getCursor(remoteUuid) : null;
   const since = cursor?.last_seen_event_created_at || null;
   const baseUrl = String(base_url || normalizeBaseUrl(node)).replace(/\/$/, '');
-  const data = await requestJson(`${baseUrl}/api/sync/events?limit=${limit}${since ? `&since=${encodeURIComponent(new Date(since).toISOString())}` : ''}`);
+  const sinceMysql = toMysqlDateTime(since);
+  const data = await requestJson(`${baseUrl}/api/sync/events?limit=${limit}${sinceMysql ? `&since=${encodeURIComponent(sinceMysql)}` : ''}`);
   const summary = await applyService.applySyncEvents(data.events || []);
   const lastSeen = (data.events || []).at(-1)?.created_at || since;
-  if (remoteUuid) await updateCursor(remoteUuid, lastSeen, null);
+  if (remoteUuid) await updateCursor(remoteUuid, lastSeen, null, { nodeName: node?.node_name });
   return { ok: true, pulled: data.events?.length || 0, ...summary };
 };
 
@@ -161,10 +187,10 @@ const fullBootstrap = async ({ host_url }) => {
     if (!events.length) break;
     await applyService.applySyncEvents(events);
     pulled += events.length;
-    since = new Date(events.at(-1).created_at).toISOString();
+    since = toMysqlDateTime(events.at(-1).created_at);
     if (events.length < 500) break;
   }
-  if (identity.node_uuid) await updateCursor(identity.node_uuid, since ? new Date(since).toISOString().slice(0, 19).replace('T', ' ') : null, null);
+  if (identity.node_uuid) await updateCursor(identity.node_uuid, since, null, { nodeName: identity.node_name });
   return { ok: true, host: identity, bootstrapped_nodes: bootstrap.nodes?.length || 0, pulled };
 };
 
@@ -180,4 +206,4 @@ const getStatus = async () => {
   return { ok: true, self, nodes: result };
 };
 
-module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, getStatus, updateCursor, normalizeBaseUrl };
+module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, getStatus, updateCursor, getCursor, normalizeBaseUrl };

@@ -3,6 +3,15 @@ const coordinator = require('./sync-coordinator.service');
 
 let timer = null;
 let running = false;
+const RETRY_COOLDOWN_MS = 30000;
+
+const canRetryNode = async (node) => {
+  const cursor = node.node_uuid ? await coordinator.getCursor(node.node_uuid) : null;
+  if (!cursor?.last_error || !cursor.last_sync_at) return true;
+  const lastAttempt = new Date(cursor.last_sync_at).getTime();
+  if (Number.isNaN(lastAttempt)) return true;
+  return Date.now() - lastAttempt >= RETRY_COOLDOWN_MS;
+};
 
 const runCycle = async () => {
   if (running) return { ok: true, skipped: true };
@@ -20,17 +29,21 @@ const runCycle = async () => {
     for (const node of nodes) {
       const base_url = coordinator.normalizeBaseUrl(node);
       try {
+        if (!(await canRetryNode(node))) {
+          results.push({ node_uuid: node.node_uuid, skipped: true, reason: 'retry_cooldown' });
+          continue;
+        }
         console.log(`[sync] puxando eventos de ${node.node_name}`);
         const pulled = await coordinator.pullFromNode({ node_uuid: node.node_uuid, base_url });
         console.log(`[sync] aplicados ${pulled.applied || 0} eventos de ${node.node_name}`);
         console.log(`[sync] enviando eventos para ${node.node_name}`);
         const pushed = await coordinator.pushToNode({ node_uuid: node.node_uuid, base_url });
         console.log(`[sync] enviando ${pushed.sent || 0} eventos para ${node.node_name}`);
-        await coordinator.updateCursor(node.node_uuid, null, null);
+        await coordinator.updateCursor(node.node_uuid, null, null, { nodeName: node.node_name });
         results.push({ node_uuid: node.node_uuid, pulled, pushed });
       } catch (error) {
         console.error(`[sync] erro ao sincronizar com ${node.node_name}: ${error.message}`);
-        await coordinator.updateCursor(node.node_uuid, null, error.message).catch(() => {});
+        await coordinator.updateCursor(node.node_uuid, null, error.message, { nodeName: node.node_name }).catch(() => {});
         results.push({ node_uuid: node.node_uuid, error: error.message });
       }
     }
