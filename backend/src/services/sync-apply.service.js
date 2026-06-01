@@ -2,7 +2,12 @@ const pool = require('../database/connection');
 const { hashPayload } = require('./sync-event.service');
 const { runWithoutSyncEvents } = require('./sync-context.service');
 
-const json = (value) => JSON.stringify(value ?? null);
+const json = (value) => {
+  if (typeof value === 'string') {
+    try { return JSON.stringify(JSON.parse(value)); } catch (_error) { return value; }
+  }
+  return JSON.stringify(value ?? null);
+};
 const asDate = (value) => (value ? new Date(value).toISOString().slice(0, 19).replace('T', ' ') : null);
 const eventTime = (event) => asDate(event.created_at) || new Date().toISOString().slice(0, 19).replace('T', ' ');
 
@@ -18,19 +23,69 @@ const shouldSkipOlder = async (connection, table, uuid, incomingAt) => {
   return row?.updated_at && new Date(row.updated_at).getTime() > new Date(incomingAt).getTime();
 };
 
+const asInt = (value, fallback = null) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : fallback;
+};
+
 const upsertClusterNode = async (event, c) => {
   const p = event.payload || {};
-  if (!p.node_uuid) throw new Error('cluster_node sem node_uuid');
-  const [[self]] = await c.execute('SELECT node_uuid FROM cluster_nodes WHERE is_self=1 LIMIT 1');
-  const isSelf = self?.node_uuid === p.node_uuid ? 1 : 0;
-  await c.execute(
-    `INSERT INTO cluster_nodes (node_uuid, node_name, tailscale_ip, public_url, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE node_name=VALUES(node_name), tailscale_ip=VALUES(tailscale_ip), public_url=VALUES(public_url), role=VALUES(role), status=VALUES(status),
-       is_self=IF(cluster_nodes.is_self=1, 1, VALUES(is_self)), last_heartbeat_at=VALUES(last_heartbeat_at), last_healthcheck_at=VALUES(last_healthcheck_at),
-       healthcheck_error=VALUES(healthcheck_error), metadata=VALUES(metadata), power_score=VALUES(power_score)`,
-    [p.node_uuid, p.node_name, p.tailscale_ip, p.public_url || null, p.role || 'UNKNOWN', p.status || 'UNKNOWN', isSelf, asDate(p.last_heartbeat_at), asDate(p.last_healthcheck_at), p.healthcheck_error || null, p.metadata || null, p.power_score ?? 5]
-  );
+  if (!p.node_uuid && !p.tailscale_ip) throw new Error('cluster_node sem node_uuid/tailscale_ip');
+
+  const [[self]] = await c.execute('SELECT id, node_uuid, tailscale_ip FROM cluster_nodes WHERE is_self=1 LIMIT 1');
+  const [[existingByUuid]] = p.node_uuid
+    ? await c.execute('SELECT * FROM cluster_nodes WHERE node_uuid=? LIMIT 1', [p.node_uuid])
+    : [[]];
+  const [[existingByIp]] = !existingByUuid && p.tailscale_ip
+    ? await c.execute('SELECT * FROM cluster_nodes WHERE tailscale_ip=? LIMIT 1', [p.tailscale_ip])
+    : [[]];
+  const existing = existingByUuid || existingByIp || null;
+  const isSelf = Boolean(self && (
+    (p.node_uuid && p.node_uuid === self.node_uuid) ||
+    (p.tailscale_ip && p.tailscale_ip === self.tailscale_ip) ||
+    (existing && existing.id === self.id)
+  ));
+
+  const values = {
+    node_uuid: p.node_uuid || existing?.node_uuid,
+    node_name: p.node_name || existing?.node_name,
+    tailscale_ip: p.tailscale_ip || existing?.tailscale_ip,
+    public_url: p.public_url ?? existing?.public_url ?? null,
+    port: asInt(p.port, existing?.port ?? null),
+    role: p.role || existing?.role || 'UNKNOWN',
+    status: p.status || existing?.status || 'UNKNOWN',
+    is_self: isSelf ? 1 : 0,
+    last_heartbeat_at: asDate(p.last_heartbeat_at) || existing?.last_heartbeat_at || null,
+    last_healthcheck_at: asDate(p.last_healthcheck_at) || existing?.last_healthcheck_at || null,
+    healthcheck_error: p.healthcheck_error ?? existing?.healthcheck_error ?? null,
+    metadata: json(p.metadata ?? existing?.metadata ?? null),
+    power_score: asInt(p.power_score, existing?.power_score ?? 5)
+  };
+
+  if (existing) {
+    await c.execute(
+      `UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, role=?, status=?, is_self=?,
+       last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=? WHERE id=?`,
+      [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.port, values.role, values.status, values.is_self,
+        values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score, existing.id]
+    );
+  } else {
+    await c.execute(
+      `INSERT INTO cluster_nodes (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.port, values.role, values.status, values.is_self,
+        values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score]
+    );
+  }
+
+  if (isSelf) {
+    await c.execute('UPDATE cluster_nodes SET is_self = CASE WHEN node_uuid = ? OR tailscale_ip = ? THEN 1 ELSE 0 END', [values.node_uuid, values.tailscale_ip]);
+  } else if (self?.id) {
+    await c.execute('UPDATE cluster_nodes SET is_self = CASE WHEN id = ? THEN 1 ELSE 0 END', [self.id]);
+  }
+
+  return 'applied';
 };
 
 const upsertDataPoint = async (event, c) => {

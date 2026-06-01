@@ -4,8 +4,60 @@ const repo = require('./cluster-node.repository');
 const applyService = require('./sync-apply.service');
 
 const normalizeBaseUrl = (node) => {
-  const raw = node?.base_url || node?.public_url || (node?.tailscale_ip ? `http://${node.tailscale_ip}:${env.port}` : '');
+  const raw = node?.base_url || node?.public_url || (node?.tailscale_ip ? `http://${node.tailscale_ip}:${node.port || env.port}` : '');
   return String(raw || '').replace(/\/$/, '');
+};
+
+
+const parseMetadata = (value) => {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch (_error) { return {}; }
+};
+
+const asInt = (value, fallback = null) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : fallback;
+};
+
+const normalizeRole = (value) => (['HOST', 'STANDBY', 'UNKNOWN'].includes(value) ? value : 'UNKNOWN');
+const normalizeStatus = (value) => (['ONLINE', 'OFFLINE', 'UNKNOWN'].includes(value) ? value : 'UNKNOWN');
+
+const normalizeUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^[\w.-]+\.(ngrok\.dev|ngrok-free\.app|dev)(:\d+)?(\/.*)?$/i.test(raw)) return `https://${raw}`;
+  if (/^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?(\/.*)?$/i.test(raw)) return `http://${raw}`;
+  return `https://${raw}`;
+};
+
+const applyBootstrapNodes = async (nodes = []) => {
+  const self = await repo.getSelfNode();
+  for (const node of nodes) {
+    if (!node?.node_uuid && !node?.tailscale_ip) continue;
+    const isSelf = Boolean(self && (
+      (node.node_uuid && node.node_uuid === self.node_uuid) ||
+      (node.tailscale_ip && node.tailscale_ip === self.tailscale_ip)
+    ));
+    await repo.upsertClusterNode({
+      node_uuid: node.node_uuid || null,
+      node_name: node.node_name,
+      tailscale_ip: node.tailscale_ip,
+      public_url: normalizeUrl(node.public_url),
+      port: asInt(node.port, env.port),
+      role: normalizeRole(node.role),
+      status: normalizeStatus(node.status),
+      is_self: isSelf ? 1 : 0,
+      power_score: asInt(node.power_score, 5),
+      metadata: parseMetadata(node.metadata),
+      last_heartbeat_at: node.last_heartbeat_at || null,
+      last_healthcheck_at: node.last_healthcheck_at || null,
+      healthcheck_error: node.healthcheck_error || null
+    }, { skipSyncEvent: true });
+  }
+  await repo.enforceSingleSelf();
 };
 
 const requestJson = async (url, options = {}, timeoutMs = 10000) => {
@@ -98,7 +150,9 @@ const pushToNode = async ({ node_uuid, base_url, limit = 500 }) => {
 const fullBootstrap = async ({ host_url }) => {
   const baseUrl = String(host_url || '').replace(/\/$/, '');
   if (!baseUrl) throw new Error('host_url obrigatório');
-  const identity = await requestJson(`${baseUrl}/api/cluster/self-identity`);
+  const bootstrap = await requestJson(`${baseUrl}/api/cluster/bootstrap`);
+  await applyBootstrapNodes(bootstrap.nodes || []);
+  const identity = bootstrap.self || bootstrap.host || await requestJson(`${baseUrl}/api/cluster/self-identity`);
   let since = null;
   let pulled = 0;
   while (true) {
@@ -111,7 +165,7 @@ const fullBootstrap = async ({ host_url }) => {
     if (events.length < 500) break;
   }
   if (identity.node_uuid) await updateCursor(identity.node_uuid, since ? new Date(since).toISOString().slice(0, 19).replace('T', ' ') : null, null);
-  return { ok: true, host: identity, pulled };
+  return { ok: true, host: identity, bootstrapped_nodes: bootstrap.nodes?.length || 0, pulled };
 };
 
 const getStatus = async () => {

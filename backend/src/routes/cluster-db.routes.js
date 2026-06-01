@@ -23,12 +23,26 @@ const normalizePowerScore = (value) => {
   return parsed;
 };
 
+const normalizePort = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return null;
+  return parsed;
+};
+
+const parseMetadata = (value) => {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch (_error) { return {}; }
+};
+
 const normalize = (body = {}) => {
   const power_score = normalizePowerScore(body.power_score);
   return {
     node_name: String(body.node_name || '').trim(),
     tailscale_ip: String(body.tailscale_ip || '').trim(),
-    public_url: String(body.public_url || '').trim() || null,
+    public_url: normalizeUrl(body.public_url),
+    port: normalizePort(body.port),
     role: ROLES.includes(body.role) ? body.role : 'UNKNOWN',
     status: STATUSES.includes(body.status) ? body.status : 'UNKNOWN',
     power_score
@@ -47,12 +61,68 @@ const normalizeUrl = (value) => {
   return `https://${raw}`;
 };
 
-const resolveRequestedRoleForJoin = () => 'STANDBY';
+const resolveRequestedRoleForJoin = (self) => {
+  const role = ROLES.includes(self?.role) ? self.role : 'STANDBY';
+  return role === 'HOST' ? 'STANDBY' : role;
+};
+
+const normalizeNodePublicUrl = (node = {}) => {
+  const explicitUrl = normalizeUrl(node.public_url);
+  if (explicitUrl) return explicitUrl;
+  const port = normalizePort(node.port) || env.port;
+  return node.tailscale_ip ? `http://${String(node.tailscale_ip).trim()}:${port}` : null;
+};
+
+const serializeClusterNode = (node = {}) => ({
+  id: node.id,
+  node_uuid: node.node_uuid || null,
+  node_name: node.node_name || '',
+  tailscale_ip: node.tailscale_ip || '',
+  public_url: normalizeNodePublicUrl(node),
+  port: normalizePort(node.port) || env.port,
+  role: ROLES.includes(node.role) ? node.role : 'UNKNOWN',
+  status: STATUSES.includes(node.status) ? node.status : 'UNKNOWN',
+  is_self: Number(node.is_self || 0),
+  power_score: normalizePowerScore(node.power_score) ?? 5,
+  last_heartbeat_at: node.last_heartbeat_at || null,
+  last_healthcheck_at: node.last_healthcheck_at || null,
+  healthcheck_error: node.healthcheck_error || null,
+  metadata: parseMetadata(node.metadata),
+  created_at: node.created_at || null,
+  updated_at: node.updated_at || null
+});
+
+const applyBootstrapNodes = async (nodes = []) => {
+  const self = await repo.getSelfNode();
+  for (const rawNode of nodes) {
+    if (!rawNode?.node_uuid && !rawNode?.tailscale_ip) continue;
+    const sameAsSelf = Boolean(self && (
+      (rawNode.node_uuid && rawNode.node_uuid === self.node_uuid) ||
+      (rawNode.tailscale_ip && rawNode.tailscale_ip === self.tailscale_ip)
+    ));
+    await repo.upsertClusterNode({
+      node_uuid: rawNode.node_uuid || null,
+      node_name: rawNode.node_name,
+      tailscale_ip: rawNode.tailscale_ip,
+      public_url: normalizeNodePublicUrl(rawNode),
+      port: normalizePort(rawNode.port) || env.port,
+      role: ROLES.includes(rawNode.role) ? rawNode.role : 'UNKNOWN',
+      status: STATUSES.includes(rawNode.status) ? rawNode.status : 'UNKNOWN',
+      is_self: sameAsSelf ? 1 : 0,
+      power_score: normalizePowerScore(rawNode.power_score) ?? 5,
+      metadata: parseMetadata(rawNode.metadata),
+      last_heartbeat_at: rawNode.last_heartbeat_at || null,
+      last_healthcheck_at: rawNode.last_healthcheck_at || null,
+      healthcheck_error: rawNode.healthcheck_error || null
+    }, { skipSyncEvent: true });
+  }
+  await repo.enforceSingleSelf();
+};
 
 router.post('/join-request', async (req, res) => {
   try {
     const requesterIp = req.ip || req.socket?.remoteAddress || 'desconhecido';
-    const { node_name, tailscale_ip, public_url, requested_role, session_secret, metadata } = req.body || {};
+    const { node_uuid, node_name, tailscale_ip, public_url, port, requested_role, power_score, session_secret, metadata } = req.body || {};
 
     console.log(`[join-request] solicitação recebida do servidor ${String(node_name || '').trim() || 'desconhecido'} / ${String(tailscale_ip || '').trim() || 'desconhecido'}`);
     console.log(`[join-request] HTTP remote address: ${requesterIp}`);
@@ -65,20 +135,37 @@ router.post('/join-request', async (req, res) => {
     }
     if (!String(node_name || '').trim() || !String(tailscale_ip || '').trim()) return res.status(400).json({ ok: false, message: 'node_name e tailscale_ip são obrigatórios.' });
 
-    const existingNode = await repo.findByTailscaleIp(String(tailscale_ip).trim());
-    if (existingNode) return res.json({ ok: true, already_registered: true, message: 'Servidor já cadastrado no cluster.' });
-
     const secretFingerprint = crypto.createHash('sha256').update(session_secret).digest('hex').slice(0, 16);
     const requestTokenHash = crypto.createHash('sha256').update(`${node_name}|${tailscale_ip}|${Date.now()}`).digest('hex');
     const payload = {
+      node_uuid: String(node_uuid || '').trim() || null,
       node_name: String(node_name).trim(),
       tailscale_ip: String(tailscale_ip).trim(),
-      public_url: String(public_url || '').trim() || null,
+      public_url: normalizeUrl(public_url),
+      port: normalizePort(port),
       requested_role: normalizeRequestedRole(requested_role),
+      power_score: normalizePowerScore(power_score) ?? 5,
       request_token_hash: requestTokenHash,
       secret_fingerprint: secretFingerprint,
-      requester_metadata: metadata ? JSON.stringify(metadata) : null
+      requester_metadata: metadata || null
     };
+
+    const existingNode = await repo.findByTailscaleIp(payload.tailscale_ip);
+    if (existingNode) {
+      await repo.upsertClusterNode({
+        node_uuid: payload.node_uuid || existingNode.node_uuid,
+        node_name: payload.node_name,
+        tailscale_ip: payload.tailscale_ip,
+        public_url: payload.public_url,
+        port: payload.port || env.port,
+        role: payload.requested_role === 'HOST' ? 'STANDBY' : payload.requested_role,
+        status: existingNode.status || 'UNKNOWN',
+        is_self: existingNode.is_self,
+        power_score: payload.power_score,
+        metadata: payload.requester_metadata
+      });
+      return res.json({ ok: true, already_registered: true, message: 'Servidor já cadastrado no cluster.' });
+    }
 
     const pending = await repo.findPendingJoinRequestByIp(payload.tailscale_ip);
     const savedRequest = pending
@@ -97,7 +184,7 @@ router.post('/join-request', async (req, res) => {
 router.get('/self-identity', async (_req, res) => {
   const self = await repo.getSelfNode();
   if (!self) return res.status(404).json({ ok: false, message: 'Servidor self não configurado.' });
-  res.json({ ok: true, node_uuid: self.node_uuid, node_name: self.node_name, tailscale_ip: self.tailscale_ip, role: self.role });
+  res.json({ ok: true, ...serializeClusterNode(self) });
 });
 
 router.get('/bootstrap', async (req, res) => {
@@ -106,7 +193,14 @@ router.get('/bootstrap', async (req, res) => {
   if (!secret || secret !== env.sessionSecret) return res.status(403).json({ ok: false, message: 'Secret inválido.' });
   const self = await repo.getSelfNode();
   const nodes = await repo.getAllNodes();
-  return res.json({ ok: true, host: self, nodes, generated_at: new Date().toISOString() });
+  const serializedSelf = self ? serializeClusterNode(self) : null;
+  return res.json({
+    ok: true,
+    self: serializedSelf,
+    host: serializedSelf,
+    nodes: nodes.map(serializeClusterNode),
+    generated_at: new Date().toISOString()
+  });
 });
 
 router.use(requireAuth);
@@ -114,17 +208,17 @@ router.use(requireAuth);
 router.get('/self', async (_req, res) => {
   try {
     const node = await repo.getSelfNode();
-    res.json({ configured: Boolean(node), node: node || null });
+    res.json({ configured: Boolean(node), node: node ? serializeClusterNode(node) : null });
   } catch (error) {
     if (handleSchemaNotMigrated(error, res)) return;
     throw error;
   }
 });
-router.post('/self', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip); const selfNode = await repo.getSelfNode(); if (existingIp && (!selfNode || existingIp.id !== selfNode.id)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); const now = new Date(); await repo.clearSelfFlag(); let node; if (selfNode) node = await repo.updateNode(selfNode.id, { ...selfNode, ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null }); else node = await repo.createNode({ ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null, metadata: null }); res.json({ configured: true, node }); });
+router.post('/self', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip); const selfNode = await repo.getSelfNode(); if (existingIp && (!selfNode || existingIp.id !== selfNode.id)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); const now = new Date(); payload.port = payload.port || env.port; await repo.clearSelfFlag(); let node; if (selfNode) node = await repo.updateNode(selfNode.id, { ...selfNode, ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null }); else node = await repo.createNode({ ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null, metadata: null, port: payload.port || env.port }); res.json({ configured: true, node: serializeClusterNode(node) }); });
 
-router.get('/nodes', async (_req, res) => res.json({ nodes: await repo.getAllNodes() }));
-router.post('/nodes', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); if (await repo.findByTailscaleIp(payload.tailscale_ip)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); const node = await repo.createNode({ ...payload, is_self: 0, status: 'UNKNOWN', last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: null }); res.status(201).json({ node }); });
-router.put('/nodes/:id', async (req, res) => { const id = Number(req.params.id); const current = await repo.findById(id); if (!current) return res.status(404).json({ message: 'Nó não encontrado.' }); const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip); if (existingIp && existingIp.id !== id) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); const node = await repo.updateNode(id, { ...current, ...payload, is_self: current.is_self }); res.json({ node }); });
+router.get('/nodes', async (_req, res) => res.json({ nodes: (await repo.getAllNodes()).map(serializeClusterNode) }));
+router.post('/nodes', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); if (await repo.findByTailscaleIp(payload.tailscale_ip)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); payload.port = payload.port || env.port; const node = await repo.createNode({ ...payload, is_self: 0, status: 'UNKNOWN', last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: null }); res.status(201).json({ node: serializeClusterNode(node) }); });
+router.put('/nodes/:id', async (req, res) => { const id = Number(req.params.id); const current = await repo.findById(id); if (!current) return res.status(404).json({ message: 'Nó não encontrado.' }); const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip); if (existingIp && existingIp.id !== id) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); payload.port = payload.port || current.port || env.port; const node = await repo.updateNode(id, { ...current, ...payload, is_self: current.is_self }); res.json({ node: serializeClusterNode(node) }); });
 router.delete('/nodes/:id', async (req, res) => { const id = Number(req.params.id); const node = await repo.findById(id); if (!node) return res.status(404).json({ message: 'Nó não encontrado.' }); if (node.is_self) return res.status(400).json({ message: 'Não é permitido remover o servidor atual.' }); await repo.deleteNode(id); res.json({ ok: true }); });
 router.post('/nodes/:id/healthcheck', async (req, res) => { const id = Number(req.params.id); const node = await repo.findById(id); if (!node) return res.status(404).json({ message: 'Nó não encontrado.' }); const updated = await healthService.checkNode(node); const ok = updated.status === 'ONLINE'; res.status(ok ? 200 : 503).json({ ok, status: updated.status, node: updated, error: ok ? null : updated.healthcheck_error }); });
 router.post('/healthcheck-all', async (_req, res) => res.json(await healthService.checkAllNodes()));
@@ -144,16 +238,27 @@ router.post('/join-requests/:id/approve', async (req, res) => {
   if (request.status === 'APPROVED') return res.json({ ok: true, message: 'Solicitação já aprovada.' });
   if (request.status === 'REJECTED') return res.status(409).json({ ok: false, message: 'Solicitação já rejeitada.' });
 
-  let node = await repo.findByTailscaleIp(request.tailscale_ip);
-  if (!node) {
-    node = await repo.createNode({ node_name: request.node_name, tailscale_ip: request.tailscale_ip, public_url: request.public_url, role: request.requested_role === 'HOST' ? 'STANDBY' : normalizeRequestedRole(request.requested_role), status: 'UNKNOWN', is_self: 0, last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: request.requester_metadata || null });
-    console.log('[join-request] servidor criado em cluster_nodes');
-  } else {
-    node = await repo.updateNode(node.id, { ...node, node_name: request.node_name, tailscale_ip: request.tailscale_ip, public_url: request.public_url, role: request.requested_role === 'HOST' ? 'STANDBY' : normalizeRequestedRole(request.requested_role), status: 'UNKNOWN', is_self: 0 });
-  }
+  const approvedRole = request.requested_role === 'HOST' ? 'STANDBY' : normalizeRequestedRole(request.requested_role);
+  const powerScore = normalizePowerScore(request.power_score) ?? 5;
+  let node = await repo.upsertClusterNode({
+    node_uuid: request.node_uuid || null,
+    node_name: request.node_name,
+    tailscale_ip: request.tailscale_ip,
+    public_url: normalizeUrl(request.public_url),
+    port: normalizePort(request.port) || env.port,
+    role: approvedRole,
+    status: 'UNKNOWN',
+    is_self: 0,
+    power_score: powerScore,
+    last_heartbeat_at: null,
+    last_healthcheck_at: null,
+    healthcheck_error: null,
+    metadata: parseMetadata(request.requester_metadata)
+  });
+  console.log('[join-request] servidor salvo em cluster_nodes');
   await repo.approveJoinRequest(id, node.id);
   console.log('[join-request] solicitação aprovada');
-  res.json({ ok: true, node });
+  res.json({ ok: true, node: serializeClusterNode(node) });
 });
 
 router.post('/join-requests/:id/reject', async (req, res) => {
@@ -180,11 +285,15 @@ router.post('/request-join-host', async (req, res) => {
   const payload = {
     node_name: String(self.node_name).trim(),
     tailscale_ip: String(self.tailscale_ip).trim(),
-    public_url: normalizeUrl(self.public_url),
-    requested_role: resolveRequestedRoleForJoin(),
+    node_uuid: self.node_uuid,
+    public_url: normalizeNodePublicUrl(self),
+    port: normalizePort(self.port) || env.port,
+    requested_role: resolveRequestedRoleForJoin(self),
+    power_score: normalizePowerScore(self.power_score) ?? 5,
     session_secret: env.sessionSecret,
     metadata: {
-      port: process.env.PORT || null,
+      ...parseMetadata(self.metadata),
+      port: normalizePort(self.port) || env.port,
       source: 'self-node-db',
       local_node_id: self.id
     }
@@ -201,21 +310,7 @@ router.post('/request-join-host', async (req, res) => {
       const bootstrapResp = await fetch(`${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/bootstrap`, { headers: { 'X-Cluster-Secret': env.sessionSecret } });
       if (bootstrapResp.ok) {
         const bootstrapData = await bootstrapResp.json();
-        for (const node of (bootstrapData.nodes || [])) {
-          if (!node?.tailscale_ip || node.is_self || node.tailscale_ip === self.tailscale_ip) continue;
-          await repo.upsertNodeByTailscaleIp({
-            node_name: node.node_name,
-            tailscale_ip: node.tailscale_ip,
-            public_url: normalizeUrl(node.public_url),
-            role: node.role || 'UNKNOWN',
-            status: node.status || 'UNKNOWN',
-            is_self: 0,
-            last_heartbeat_at: node.last_heartbeat_at || null,
-            last_healthcheck_at: node.last_healthcheck_at || null,
-            healthcheck_error: node.healthcheck_error || null,
-            metadata: node.metadata || null
-          });
-        }
+        await applyBootstrapNodes(bootstrapData.nodes || []);
       }
     }
 

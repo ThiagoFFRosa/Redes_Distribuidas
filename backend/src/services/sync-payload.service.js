@@ -17,10 +17,10 @@ const dataPointPayload = (row) => row && ({
 });
 
 const clusterNodePayload = (row) => row && ({
-  node_uuid: row.node_uuid, node_name: row.node_name, tailscale_ip: row.tailscale_ip, public_url: row.public_url,
-  role: row.role, status: row.status, is_self: 0, last_heartbeat_at: dateValue(row.last_heartbeat_at),
+  id: row.id, node_uuid: row.node_uuid, node_name: row.node_name, tailscale_ip: row.tailscale_ip, public_url: row.public_url,
+  port: row.port == null ? null : Number(row.port), role: row.role, status: row.status, is_self: 0, last_heartbeat_at: dateValue(row.last_heartbeat_at),
   last_healthcheck_at: dateValue(row.last_healthcheck_at), healthcheck_error: row.healthcheck_error,
-  metadata: row.metadata, power_score: Number(row.power_score ?? 5), created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)
+  metadata: parseJson(row.metadata) ?? {}, power_score: Number(row.power_score ?? 5), created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)
 });
 
 const getDataPointPayloadById = async (id, connection = pool) => {

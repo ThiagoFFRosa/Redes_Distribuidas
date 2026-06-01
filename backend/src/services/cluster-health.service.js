@@ -8,7 +8,7 @@ const trimStr = (v) => (typeof v === 'string' ? v.trim() : '');
 class ClusterHealthService {
   buildHealthUrl(node) {
     if (trimStr(node.public_url)) return `${trimStr(node.public_url).replace(/\/$/, '')}${HEALTH_PATH}`;
-    return `http://${trimStr(node.tailscale_ip)}:${env.port}${HEALTH_PATH}`;
+    return `http://${trimStr(node.tailscale_ip)}:${node.port || env.port}${HEALTH_PATH}`;
   }
 
   async checkNode(node) {

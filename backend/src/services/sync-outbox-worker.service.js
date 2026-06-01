@@ -9,7 +9,7 @@ let loggedNoNodes = false;
 
 const nodeBaseUrl = (node) => {
   if (node.public_url) return String(node.public_url).replace(/\/$/, '');
-  if (node.tailscale_ip) return `http://${node.tailscale_ip}:${env.port}`;
+  if (node.tailscale_ip) return `http://${node.tailscale_ip}:${node.port || env.port}`;
   return null;
 };
 
