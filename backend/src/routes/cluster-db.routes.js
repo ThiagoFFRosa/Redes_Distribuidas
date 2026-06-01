@@ -59,7 +59,7 @@ router.post('/join-request', async (req, res) => {
 
     if (!env.sessionSecret) return res.status(500).json({ ok: false, message: 'SESSION_SECRET não configurado no host.' });
 
-        if (session_secret !== env.sessionSecret) {
+    if (session_secret !== env.sessionSecret) {
       console.warn('[join-request] secret inválido');
       return res.status(403).json({ ok: false, message: 'Secret inválido.' });
     }
@@ -81,10 +81,11 @@ router.post('/join-request', async (req, res) => {
     };
 
     const pending = await repo.findPendingJoinRequestByIp(payload.tailscale_ip);
-    if (pending) await repo.updateJoinRequest(pending.id, payload);
-    else await repo.createJoinRequest(payload);
+    const savedRequest = pending
+      ? await repo.updateJoinRequest(pending.id, payload)
+      : await repo.createJoinRequest(payload);
 
-    console.log('[join-request] solicitação registrada como PENDING');
+    console.log(`[join-request] solicitação registrada como PENDING id=${savedRequest.id}`);
     return res.json({ ok: true, status: 'PENDING', message: 'Solicitação enviada. Aguardando aprovação no host.' });
   } catch (error) {
     if (handleSchemaNotMigrated(error, res)) return;
@@ -132,7 +133,8 @@ router.get('/join-requests', async (req, res) => {
   const status = String(req.query.status || '').toUpperCase();
   const filterStatus = JOIN_STATUSES.includes(status) ? status : null;
   const requests = await repo.listJoinRequests(filterStatus);
-  res.json({ ok: true, requests });
+  console.log(`[join-requests] listando solicitações status=${filterStatus || 'ALL'} total=${requests.length}`);
+  res.json({ ok: true, data: requests });
 });
 
 router.post('/join-requests/:id/approve', async (req, res) => {
