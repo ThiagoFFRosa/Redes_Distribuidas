@@ -13,6 +13,11 @@ const parseNumber = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const parsePositiveInteger = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 
 module.exports = {
   port: parseNumber(process.env.PORT, 4178),
@@ -39,5 +44,8 @@ module.exports = {
   ngrokRegion: process.env.NGROK_REGION || 'sa',
   ngrokDomain: (process.env.NGROK_DOMAIN || '').trim(),
   publicUrlCheckIntervalMs: parseNumber(process.env.PUBLIC_URL_CHECK_INTERVAL_MS, 30000),
-  publicUrlCheckTimeoutMs: parseNumber(process.env.PUBLIC_URL_CHECK_TIMEOUT_MS, 3000)
+  publicUrlCheckTimeoutMs: parseNumber(process.env.PUBLIC_URL_CHECK_TIMEOUT_MS, 3000),
+  syncBatchSize: parsePositiveInteger(process.env.SYNC_BATCH_SIZE, 100),
+  syncMaxPayloadBytes: parsePositiveInteger(process.env.SYNC_MAX_PAYLOAD_BYTES, 512000),
+  syncMaxBatchesPerCycle: parsePositiveInteger(process.env.SYNC_MAX_BATCHES_PER_CYCLE, 5)
 };

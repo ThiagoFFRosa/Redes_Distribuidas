@@ -127,7 +127,9 @@ const generateChartForJob = async (job, selfNode) => {
   await pool.execute('UPDATE chart_generation_jobs SET progress_percent=45 WHERE id=?', [job.id]);
   const total = rows.length;
   const step = Math.max(1, Math.ceil(total / MAX_POINTS));
-  const sampled = rows.filter((_row, index) => index % step === 0 || index === total - 1);
+  const sampled = total <= MAX_POINTS
+    ? rows
+    : Array.from({ length: MAX_POINTS }, (_value, index) => rows[Math.round(index * (total - 1) / (MAX_POINTS - 1))]);
   const labels = sampled.map((row) => dateOnly(row.measured_at));
   const values = sampled.map((row) => Number(row.value));
   const numericValues = rows.map((row) => Number(row.value)).filter(Number.isFinite);

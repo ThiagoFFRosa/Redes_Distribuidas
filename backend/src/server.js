@@ -29,7 +29,26 @@ const syncEventService = require('./services/sync-event.service');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    console.error('[server] payload muito grande:', {
+      path: req.path,
+      method: req.method,
+      expected: err.expected,
+      length: err.length,
+      limit: err.limit
+    });
+
+    return res.status(413).json({
+      ok: false,
+      error: 'Payload muito grande. Envie os dados em lotes menores.'
+    });
+  }
+
+  return next(err);
+});
 app.use(session({ secret: env.sessionSecret, resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax' } }));
 
 app.get('/', (req, res) => res.sendFile(path.join(publicPath, 'index.html')));
@@ -65,7 +84,11 @@ app.use('/api/public', publicMonitoringRoutes);
 app.use('/api/imports', importRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/processing', processingRoutes);
-app.use((error, req, res, _next) => { console.error('[server] erro não tratado:', error); res.status(500).json({ message: 'Erro interno do servidor.' }); });
+app.use((error, req, res, next) => {
+  console.error('[server] erro não tratado:', error);
+  if (res.headersSent) return next(error);
+  return res.status(500).json({ ok: false, error: 'Erro interno do servidor.' });
+});
 
 const start = async () => {
   await clusterStartupService.initialize();
