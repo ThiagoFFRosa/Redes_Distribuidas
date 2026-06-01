@@ -1,5 +1,6 @@
 const pool = require('./connection');
 const adminSeed = require('./seeds/001_admin_user');
+const monitoringSeed = require('./seeds/002_monitoring_demo');
 
 const run = async () => {
   const connection = await pool.getConnection();
@@ -14,8 +15,10 @@ const run = async () => {
   }
 
   try {
-    console.log(`[seed] executando ${adminSeed.id}...`);
-    await adminSeed.run(connection);
+    for (const seed of [adminSeed, monitoringSeed]) {
+      console.log(`[seed] executando ${seed.id}...`);
+      await seed.run(connection);
+    }
     console.log('[seed] finalizado.');
   } catch (error) {
     console.error('[seed] falha ao executar seeds:', error.message);

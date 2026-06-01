@@ -167,7 +167,7 @@
                     <!-- Grafico -->
                     <div class="card p-0 lg:col-span-2 flex flex-col">
                         <div class="p-5 border-b border-slate-100 flex justify-between items-center">
-                            <h3 class="font-bold text-dark">Nível do Rio (Exemplo)</h3>
+                            <h3 class="font-bold text-dark">Nível do Rio</h3>
                             <span class="text-xs font-medium bg-slate-100 text-slate-600 px-2 py-1 rounded">Média consolidada</span>
                         </div>
                         <div class="p-4 flex-1 relative min-h-[300px] w-full">
@@ -304,14 +304,15 @@
                                     </button>
                                 </div>
                             </form>
+                            <div id="pontos-feedback" class="text-sm mt-3"></div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Tabela de Pontos Mockados -->
+                <!-- Tabela de Pontos persistidos no MySQL -->
                 <div class="card p-0 mt-6 border border-slate-200 shadow-sm" id="card-pontos-lista">
                     <div class="p-5 border-b border-slate-100 bg-white">
-                        <h3 class="font-bold text-dark">Pontos Cadastrados (Sessão Atual)</h3>
+                        <h3 class="font-bold text-dark">Pontos Cadastrados no Banco</h3>
                     </div>
                     <div class="overflow-x-auto w-full rounded-b-xl">
                         <table class="w-full text-left text-sm min-w-[600px] bg-white">
@@ -321,6 +322,7 @@
                                     <th class="p-4 font-medium">Localização</th>
                                     <th class="p-4 font-medium">Coordenadas</th>
                                     <th class="p-4 font-medium">Status</th>
+                                    <th class="p-4 font-medium text-right">Ações</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100" id="tbody-pontos">
@@ -380,9 +382,19 @@
                                 </button>
                             </div>
                         </form>
+                        <div id="inserir-feedback" class="text-sm mt-4"></div>
+                        <div class="mt-6 border border-dashed border-slate-300 rounded-xl p-4 bg-slate-50">
+                            <h4 class="font-bold text-dark flex items-center gap-2"><i data-lucide="file-spreadsheet" class="w-4 h-4 text-primary"></i> Importar medições por planilha</h4>
+                            <p class="text-sm text-slate-500 mt-2">Importação em lote via XLSX/CSV será adicionada em uma próxima etapa.</p>
+                            <div class="flex flex-col sm:flex-row gap-3 mt-4">
+                                <button type="button" class="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 font-medium cursor-not-allowed" disabled>Selecionar arquivo XLSX/CSV</button>
+                                <button type="button" class="px-4 py-2 rounded-lg bg-slate-200 text-slate-500 font-medium cursor-not-allowed" disabled>Importar dados</button>
+                            </div>
+                            <p class="text-xs text-slate-500 mt-3">Em breve: pré-visualização, validação e importação em lote.</p>
+                        </div>
                     </div>
 
-                    <!-- Fila RabbitMQ Simulada -->
+                    <!-- Fila Simulada de Eventos -->
                     <div class="card p-0 flex flex-col shadow-lg border border-slate-700 rounded-xl overflow-hidden bg-slate-900 h-[500px] xl:h-auto">
                         <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950 shrink-0">
                             <div class="flex items-center gap-2">
@@ -431,6 +443,8 @@
                                     <th class="p-4 font-medium">Nível Atual</th>
                                     <th class="p-4 font-medium">Situação</th>
                                     <th class="p-4 font-medium">Horário (Detecção)</th>
+                                    <th class="p-4 font-medium">Status</th>
+                                    <th class="p-4 font-medium text-right">Ações</th>
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100" id="tbody-alertas">
