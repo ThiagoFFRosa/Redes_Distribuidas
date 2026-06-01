@@ -28,6 +28,10 @@ const validatePayload = (body) => {
     return { error: 'O nível de risco deve ser maior que o nível normal.' };
   }
 
+  const latitudeMissing = body.latitude === undefined || body.latitude === null || body.latitude === '';
+  const longitudeMissing = body.longitude === undefined || body.longitude === null || body.longitude === '';
+  if (latitudeMissing || longitudeMissing) return { error: 'Latitude e longitude são obrigatórias.' };
+
   const payload = {
     name: (body.name || '').trim(),
     type: body.type || 'RIVER_LEVEL',
@@ -42,8 +46,7 @@ const validatePayload = (body) => {
     measurement_unit: (body.measurement_unit || 'm').trim() || 'm'
   };
   if (!payload.name) return { error: 'name é obrigatório.' };
-  if (!Number.isFinite(payload.latitude)) return { error: 'latitude obrigatória e numérica.' };
-  if (!Number.isFinite(payload.longitude)) return { error: 'longitude obrigatória e numérica.' };
+  if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) return { error: 'Latitude e longitude são obrigatórias.' };
   if (!allowedTypes.has(payload.type)) return { error: 'type inválido.' };
   if (!allowedStatuses.has(payload.status)) return { error: 'status inválido.' };
   return { payload };
@@ -80,11 +83,19 @@ router.put('/:id', requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.post('/:id/reactivate', requireAuth, async (req, res, next) => {
+  try {
+    const point = await repository.setStatus(req.params.id, 'ACTIVE');
+    if (!point) return res.status(404).json({ ok: false, message: 'Ponto não encontrado.' });
+    res.json({ ok: true, message: 'Ponto reativado com sucesso.', data: point });
+  } catch (error) { next(error); }
+});
+
 router.delete('/:id', requireAuth, async (req, res, next) => {
   try {
     const point = await repository.setStatus(req.params.id, 'INACTIVE');
     if (!point) return res.status(404).json({ ok: false, message: 'Ponto não encontrado.' });
-    res.json({ ok: true, data: point });
+    res.json({ ok: true, message: 'Ponto desativado com sucesso.', data: point });
   } catch (error) { next(error); }
 });
 

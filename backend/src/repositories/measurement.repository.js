@@ -23,6 +23,24 @@ const findAll = async ({ data_point_id, limit = 50, from, to } = {}) => {
 
 const findLatest = async (limit = 10) => findAll({ limit });
 
+const findLatestByDataPointAsc = async (dataPointId, limit = 12) => {
+  const safeLimit = Math.min(Math.max(Number(limit) || 12, 1), 100);
+  const [rows] = await pool.execute(
+    `SELECT recent.*
+       FROM (
+         SELECT id, data_point_id, measurement_type, value, unit, measured_at, source, observation, created_at
+           FROM measurements
+          WHERE data_point_id = ?
+          ORDER BY measured_at DESC, id DESC
+          LIMIT ${safeLimit}
+       ) recent
+      ORDER BY recent.measured_at ASC, recent.id ASC`,
+    [dataPointId]
+  );
+  return rows.map(parse);
+};
+
+
 const create = async (payload) => {
   const [result] = await pool.execute(
     `INSERT INTO measurements (data_point_id, measurement_type, value, unit, measured_at, source, observation, created_by_user_id)
@@ -54,4 +72,4 @@ const latestOne = async () => {
   return parse(rows[0]);
 };
 
-module.exports = { findAll, findLatest, create, chartRiverLevel, latestOne };
+module.exports = { findAll, findLatest, findLatestByDataPointAsc, create, chartRiverLevel, latestOne };

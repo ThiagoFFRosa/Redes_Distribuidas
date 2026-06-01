@@ -19,6 +19,7 @@ const measurementRoutes = require('./routes/measurement.routes');
 const alertRoutes = require('./routes/alert.routes');
 const eventQueueRoutes = require('./routes/event-queue.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
+const publicMonitoringRoutes = require('./routes/public-monitoring.routes');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -54,6 +55,7 @@ app.use('/api/measurements', measurementRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/event-queue', eventQueueRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/public', publicMonitoringRoutes);
 app.use((error, req, res, _next) => { console.error('[server] erro não tratado:', error); res.status(500).json({ message: 'Erro interno do servidor.' }); });
 
 const start = async () => {

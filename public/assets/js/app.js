@@ -104,6 +104,17 @@ document.addEventListener('DOMContentLoaded', () => {
     let marker;
     let selectedLatLng = null;
     let pointMarkers = [];
+    let pointBeingEdited = null;
+    let pendingPointAction = null;
+
+    const editPointModal = document.getElementById('edit-point-modal');
+    const editPointForm = document.getElementById('edit-point-form');
+    const editPointError = document.getElementById('edit-point-error');
+    const confirmPointModal = document.getElementById('confirm-point-modal');
+    const confirmPointTitle = document.getElementById('confirm-point-title');
+    const confirmPointMessage = document.getElementById('confirm-point-message');
+    const confirmPointError = document.getElementById('confirm-point-error');
+
 
     const clearPointMarkers = () => {
         pointMarkers.forEach((m) => map?.removeLayer(m));
@@ -114,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!map) return;
         clearPointMarkers();
         state.pontos.forEach((p) => {
-            const m = L.circleMarker([p.latitude, p.longitude], { radius: 8, fillColor: p.status === 'ACTIVE' ? '#0284c7' : '#94a3b8', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8 }).addTo(map);
+            const m = L.circleMarker([p.latitude, p.longitude], { radius: 8, fillColor: p.status === 'ACTIVE' ? '#0284c7' : '#94a3b8', color: '#fff', weight: 2, opacity: p.status === 'ACTIVE' ? 1 : 0.75, fillOpacity: p.status === 'ACTIVE' ? 0.85 : 0.45 }).addTo(map);
             m.bindPopup(`<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.city_region || '')}<br>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}<br>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}<br>Status: ${escapeHtml(p.status)}`);
             pointMarkers.push(m);
         });
@@ -151,9 +162,61 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-xs font-mono text-slate-500">${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}</td>
                     <td class="p-4"><span class="px-2 py-1 rounded ${badge} text-xs font-semibold text-center inline-block w-20">${escapeHtml(p.status)}</span></td>
                     <td class="p-4 text-xs text-slate-600"><div>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}</div><div>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}</div></td>
-                    <td class="p-4 text-right"><button class="px-2 py-1 border rounded text-slate-500 cursor-not-allowed" title="Edição completa fica para próxima etapa">Editar</button> <button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button></td>
+                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">Editar</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
                 </tr>`;
         });
+    };
+
+    const openEditPointModal = (point) => {
+        pointBeingEdited = point;
+        if (editPointError) editPointError.textContent = '';
+        document.getElementById('edit-point-name').value = point.name || '';
+        document.getElementById('edit-point-latitude').value = point.latitude ?? '';
+        document.getElementById('edit-point-longitude').value = point.longitude ?? '';
+        document.getElementById('edit-point-type').value = point.type || 'RIVER_LEVEL';
+        document.getElementById('edit-point-city').value = point.city_region || '';
+        document.getElementById('edit-point-description').value = point.description || '';
+        document.getElementById('edit-point-status').value = point.status || 'ACTIVE';
+        document.getElementById('edit-point-normal').value = point.normal_level ?? '';
+        document.getElementById('edit-point-warning').value = point.warning_level ?? '';
+        document.getElementById('edit-point-critical').value = point.critical_level ?? '';
+        document.getElementById('edit-point-unit').value = point.measurement_unit || 'm';
+        editPointModal?.classList.remove('hidden');
+        editPointModal?.classList.add('flex');
+    };
+
+    const closeEditPointModal = () => {
+        pointBeingEdited = null;
+        editPointModal?.classList.add('hidden');
+        editPointModal?.classList.remove('flex');
+    };
+
+    const parseOptionalLevel = (value) => value === '' ? null : Number(value);
+
+    const validatePointFormPayload = (payload) => {
+        if (!payload.name) return 'Nome do ponto é obrigatório.';
+        if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) return 'Latitude e longitude são obrigatórias.';
+        const levels = [payload.normal_level, payload.warning_level, payload.critical_level];
+        if (levels.some((value) => value !== null && (!Number.isFinite(value) || value < 0))) return 'Os níveis devem ser valores numéricos positivos.';
+        if (payload.warning_level !== null && payload.critical_level !== null && payload.critical_level <= payload.warning_level) return 'O nível crítico deve ser maior que o nível de risco.';
+        if (payload.normal_level !== null && payload.warning_level !== null && payload.warning_level <= payload.normal_level) return 'O nível de risco deve ser maior que o nível normal.';
+        return '';
+    };
+
+    const openConfirmPointModal = (point, action) => {
+        pendingPointAction = { point, action };
+        if (confirmPointError) confirmPointError.textContent = '';
+        const isReactivate = action === 'reactivate';
+        if (confirmPointTitle) confirmPointTitle.textContent = isReactivate ? 'Reativar ponto' : 'Desativar ponto';
+        if (confirmPointMessage) confirmPointMessage.textContent = isReactivate ? 'Deseja reativar este ponto?' : 'Deseja desativar este ponto?';
+        confirmPointModal?.classList.remove('hidden');
+        confirmPointModal?.classList.add('flex');
+    };
+
+    const closeConfirmPointModal = () => {
+        pendingPointAction = null;
+        confirmPointModal?.classList.add('hidden');
+        confirmPointModal?.classList.remove('flex');
     };
 
     const renderSelectedPointThresholds = () => {
@@ -224,11 +287,63 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) { setFeedback('pontos-feedback', error.message, true); }
     });
 
-    document.getElementById('tbody-pontos')?.addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-action="deactivate-point"]');
+    document.getElementById('tbody-pontos')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
         if (!btn) return;
-        try { await apiFetch(`/api/data-points/${btn.dataset.id}`, { method: 'DELETE' }); setFeedback('pontos-feedback', 'Ponto desativado.'); await loadDataPoints(); await loadDashboard(); }
-        catch (error) { setFeedback('pontos-feedback', error.message, true); }
+        const point = state.pontos.find((p) => String(p.id) === String(btn.dataset.id));
+        if (!point) return;
+        if (btn.dataset.action === 'edit-point') openEditPointModal(point);
+        if (btn.dataset.action === 'deactivate-point') openConfirmPointModal(point, 'deactivate');
+        if (btn.dataset.action === 'reactivate-point') openConfirmPointModal(point, 'reactivate');
+    });
+
+    document.getElementById('close-edit-point-modal')?.addEventListener('click', closeEditPointModal);
+    document.getElementById('cancel-edit-point-modal')?.addEventListener('click', closeEditPointModal);
+
+    editPointForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!pointBeingEdited) return;
+        const payload = {
+            name: document.getElementById('edit-point-name').value.trim(),
+            type: document.getElementById('edit-point-type').value,
+            latitude: Number(document.getElementById('edit-point-latitude').value),
+            longitude: Number(document.getElementById('edit-point-longitude').value),
+            city_region: document.getElementById('edit-point-city').value.trim() || null,
+            description: document.getElementById('edit-point-description').value.trim() || null,
+            status: document.getElementById('edit-point-status').value,
+            normal_level: parseOptionalLevel(document.getElementById('edit-point-normal').value),
+            warning_level: parseOptionalLevel(document.getElementById('edit-point-warning').value),
+            critical_level: parseOptionalLevel(document.getElementById('edit-point-critical').value),
+            measurement_unit: document.getElementById('edit-point-unit').value.trim() || 'm'
+        };
+        const error = validatePointFormPayload(payload);
+        if (error) { if (editPointError) editPointError.textContent = error; return; }
+        try {
+            await apiFetch(`/api/data-points/${pointBeingEdited.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+            closeEditPointModal();
+            setFeedback('pontos-feedback', 'Ponto atualizado com sucesso.');
+            await loadDataPoints();
+            await loadDashboard();
+        } catch (err) { if (editPointError) editPointError.textContent = err.message; }
+    });
+
+    document.getElementById('cancel-confirm-point-modal')?.addEventListener('click', closeConfirmPointModal);
+    document.getElementById('close-confirm-point-modal')?.addEventListener('click', closeConfirmPointModal);
+    document.getElementById('confirm-point-action')?.addEventListener('click', async () => {
+        if (!pendingPointAction) return;
+        const { point, action } = pendingPointAction;
+        try {
+            if (action === 'reactivate') {
+                await apiFetch(`/api/data-points/${point.id}/reactivate`, { method: 'POST' });
+                setFeedback('pontos-feedback', 'Ponto reativado com sucesso.');
+            } else {
+                await apiFetch(`/api/data-points/${point.id}`, { method: 'DELETE' });
+                setFeedback('pontos-feedback', 'Ponto desativado com sucesso.');
+            }
+            closeConfirmPointModal();
+            await loadDataPoints();
+            await loadDashboard();
+        } catch (err) { if (confirmPointError) confirmPointError.textContent = err.message; }
     });
 
     const renderEventQueue = () => {
