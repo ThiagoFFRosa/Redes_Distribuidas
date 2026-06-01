@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const pool = require('../database/connection');
 const { shouldSkipSyncEvent } = require('./sync-context.service');
+const { nowMysql } = require('../utils/mysql-date');
 
 const normalizePayload = (value) => {
   if (Array.isArray(value)) return value.map(normalizePayload);
@@ -33,7 +34,7 @@ const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', pa
   }
 
   const eventUuid = newUuid();
-  const createdAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const createdAt = nowMysql();
   const payloadHash = hashPayload(payload);
   await connection.execute(
     `INSERT INTO sync_events (event_uuid, source_node_uuid, entity_type, entity_key, operation, payload, payload_hash, version, created_at, applied_locally_at)

@@ -1,12 +1,16 @@
 const pool = require('../database/connection');
+const { toMysqlDateTime } = require('../utils/mysql-date');
 
 const parseJson = (value) => {
   if (!value) return null;
   if (typeof value === 'object') return value;
   try { return JSON.parse(value); } catch (_error) { return null; }
 };
-const dateValue = (value) => (value ? new Date(value).toISOString().slice(0, 19).replace('T', ' ') : null);
-const dateOnly = (value) => (value ? new Date(value).toISOString().slice(0, 10) : null);
+const dateValue = toMysqlDateTime;
+const dateOnly = (value) => {
+  const mysqlDateTime = toMysqlDateTime(value);
+  return mysqlDateTime ? mysqlDateTime.slice(0, 10) : null;
+};
 const num = (value) => (value == null ? null : Number(value));
 
 const dataPointPayload = (row) => row && ({

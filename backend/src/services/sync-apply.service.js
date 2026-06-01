@@ -1,6 +1,7 @@
 const pool = require('../database/connection');
 const { hashPayload } = require('./sync-event.service');
 const { runWithoutSyncEvents } = require('./sync-context.service');
+const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
 
 const json = (value) => {
   if (typeof value === 'string') {
@@ -8,8 +9,12 @@ const json = (value) => {
   }
   return JSON.stringify(value ?? null);
 };
-const asDate = (value) => (value ? new Date(value).toISOString().slice(0, 19).replace('T', ' ') : null);
-const eventTime = (event) => asDate(event.created_at) || new Date().toISOString().slice(0, 19).replace('T', ' ');
+const asDate = toMysqlDateTime;
+const asDateOnly = (value) => {
+  const mysqlDateTime = toMysqlDateTime(value);
+  return mysqlDateTime ? mysqlDateTime.slice(0, 10) : null;
+};
+const eventTime = (event) => asDate(event.created_at) || nowMysql();
 
 const findIdByUuid = async (connection, table, uuid) => {
   if (!uuid) return null;
@@ -152,7 +157,7 @@ const upsertHistoricalMeasurement = async (event, c) => {
     `INSERT INTO historical_measurements (uuid, data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value, source)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), import_id=VALUES(import_id), raw_value=VALUES(raw_value), raw_unit=VALUES(raw_unit), value=VALUES(value), unit=VALUES(unit), max_value=VALUES(max_value), min_value=VALUES(min_value), source=VALUES(source)`,
-    [p.uuid, dataPointId, importId, p.measured_at, p.raw_value ?? null, p.raw_unit || 'cm', p.value, p.unit || 'm', p.max_value ?? null, p.min_value ?? null, p.source || 'CSV_IMPORT']
+    [p.uuid, dataPointId, importId, asDateOnly(p.measured_at), p.raw_value ?? null, p.raw_unit || 'cm', p.value, p.unit || 'm', p.max_value ?? null, p.min_value ?? null, p.source || 'CSV_IMPORT']
   );
 };
 
@@ -190,8 +195,8 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
   const payloadHash = event.payload_hash || hashPayload(event.payload);
   await connection.execute(
     `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, entity_type, entity_key, payload_hash, applied_at)
-     VALUES (?, ?, ?, ?, ?, NOW())`,
-    [event.event_uuid, event.source_node_uuid, event.entity_type, event.entity_key || event.payload?.uuid || event.payload?.node_uuid, payloadHash]
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [event.event_uuid, event.source_node_uuid, event.entity_type, event.entity_key || event.payload?.uuid || event.payload?.node_uuid, payloadHash, nowMysql()]
   );
   return result === 'skipped_older' ? { status: 'skipped', reason: 'older_than_local' } : { status: 'applied' };
 });

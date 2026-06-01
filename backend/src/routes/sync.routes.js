@@ -17,7 +17,10 @@ router.get('/events', requireClusterSecret, async (req, res, next) => {
   try {
     const events = await coordinator.listEvents({ since: req.query.since || null, limit: req.query.limit || 500 });
     res.json({ ok: true, events, server_time: new Date().toISOString() });
-  } catch (error) { next(error); }
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message });
+    return next(error);
+  }
 });
 
 router.post('/apply', requireClusterSecret, async (req, res, next) => {
