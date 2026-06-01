@@ -662,6 +662,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = { host_url: document.getElementById('join-host-url').value.trim() };
         try {
             const data = await apiFetch('/api/cluster/request-join-host', { method:'POST', body: JSON.stringify(payload)});
+            await fetchClusterNodes();
+            renderServidores();
+            initCards();
             feedback.textContent = data.message || 'Solicitação enviada. Aguarde aprovação no host.';
             feedback.className = 'text-sm mt-3 text-green-600';
         } catch (error) {

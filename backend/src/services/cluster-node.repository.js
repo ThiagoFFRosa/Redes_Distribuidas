@@ -3,7 +3,25 @@ const db = require('../database/connection');
 const syncEventService = require('./sync-event.service');
 const syncPayloadService = require('./sync-payload.service');
 
-const mapNode = (row) => ({ ...row, is_self: Number(row.is_self), power_score: Number(row.power_score ?? 5) });
+const asNumber = (value, fallback = null) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const mapNode = (row) => ({
+  ...row,
+  is_self: Number(row.is_self),
+  port: asNumber(row.port, null),
+  power_score: asNumber(row.power_score, 5)
+});
+
+const toJsonValue = (value) => {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+};
 
 class ClusterNodeRepository {
   async getSelfNode() {
@@ -16,7 +34,6 @@ class ClusterNodeRepository {
       ORDER BY is_self DESC, CASE role WHEN 'HOST' THEN 0 WHEN 'STANDBY' THEN 1 ELSE 2 END, node_name ASC`);
     return rows.map(mapNode);
   }
-
 
   async getExternalNodes() {
     const [rows] = await db.execute('SELECT * FROM cluster_nodes WHERE is_self = 0 ORDER BY node_name ASC');
@@ -48,24 +65,62 @@ class ClusterNodeRepository {
     return rows[0] ? mapNode(rows[0]) : null;
   }
 
+  async findByDistributedIdentity(data) {
+    if (data?.node_uuid) {
+      const byUuid = await this.findByNodeUuid(data.node_uuid);
+      if (byUuid) return byUuid;
+    }
+    if (data?.tailscale_ip) return this.findByTailscaleIp(data.tailscale_ip);
+    return null;
+  }
 
-  async upsertNodeByTailscaleIp(data) {
-    const existing = await this.findByTailscaleIp(data.tailscale_ip);
-    if (existing) return this.updateNode(existing.id, { ...existing, ...data, is_self: Number(data.is_self ?? existing.is_self) });
-    return this.createNode({
-      node_uuid: data.node_uuid,
-      node_name: data.node_name,
-      tailscale_ip: data.tailscale_ip,
-      public_url: data.public_url || null,
-      role: data.role || 'UNKNOWN',
-      status: data.status || 'UNKNOWN',
-      is_self: Number(data.is_self || 0),
-      last_heartbeat_at: data.last_heartbeat_at || null,
-      last_healthcheck_at: data.last_healthcheck_at || null,
-      healthcheck_error: data.healthcheck_error || null,
-      metadata: data.metadata || null,
-      power_score: data.power_score ?? 5
-    });
+  async enforceSingleSelf(selfId = null) {
+    if (selfId) {
+      await db.execute('UPDATE cluster_nodes SET is_self = CASE WHEN id = ? THEN 1 ELSE 0 END', [selfId]);
+      return;
+    }
+    const self = await this.getSelfNode();
+    if (self) await this.enforceSingleSelf(self.id);
+  }
+
+  async upsertNodeByTailscaleIp(data, options = {}) {
+    return this.upsertClusterNode(data, options);
+  }
+
+  async upsertClusterNode(data, options = {}) {
+    const self = await this.getSelfNode();
+    const existing = await this.findByDistributedIdentity(data);
+    const matchesLocalSelf = Boolean(self && (
+      (data.node_uuid && self.node_uuid === data.node_uuid) ||
+      (data.tailscale_ip && self.tailscale_ip === data.tailscale_ip) ||
+      (existing && existing.id === self.id)
+    ));
+    const isSelf = (matchesLocalSelf || (!self && Number(data.is_self) === 1)) ? 1 : 0;
+    const payload = {
+      ...(existing || {}),
+      ...data,
+      node_uuid: data.node_uuid || existing?.node_uuid || crypto.randomUUID(),
+      node_name: data.node_name || existing?.node_name,
+      tailscale_ip: data.tailscale_ip || existing?.tailscale_ip,
+      public_url: data.public_url ?? existing?.public_url ?? null,
+      port: asNumber(data.port, existing?.port ?? null),
+      role: data.role || existing?.role || 'UNKNOWN',
+      status: data.status || existing?.status || 'UNKNOWN',
+      is_self: isSelf,
+      last_heartbeat_at: data.last_heartbeat_at ?? existing?.last_heartbeat_at ?? null,
+      last_healthcheck_at: data.last_healthcheck_at ?? existing?.last_healthcheck_at ?? null,
+      healthcheck_error: data.healthcheck_error ?? existing?.healthcheck_error ?? null,
+      metadata: toJsonValue(data.metadata ?? existing?.metadata ?? null),
+      power_score: asNumber(data.power_score, existing?.power_score ?? 5)
+    };
+
+    const node = existing
+      ? await this.updateNode(existing.id, payload, options)
+      : await this.createNode(payload, options);
+
+    if (node?.is_self) await this.enforceSingleSelf(node.id);
+    else await this.enforceSingleSelf();
+    return node;
   }
 
   async updateStatus(id, status, error = null) {
@@ -82,7 +137,6 @@ class ClusterNodeRepository {
   }
 
   async setSelfNode(data) {
-    await this.clearSelfFlag();
     const now = new Date();
     const payload = {
       ...data,
@@ -91,30 +145,34 @@ class ClusterNodeRepository {
       last_healthcheck_at: now,
       last_heartbeat_at: now,
       healthcheck_error: null,
-      power_score: data.power_score ?? 5
+      power_score: asNumber(data.power_score, 5)
     };
-    return this.upsertNodeByTailscaleIp(payload);
+    const node = await this.upsertClusterNode(payload);
+    await this.enforceSingleSelf(node.id);
+    return node;
   }
 
   async clearSelfFlag() { await db.execute('UPDATE cluster_nodes SET is_self = 0 WHERE is_self = 1'); }
 
-  async createNode(payload) {
+  async createNode(payload, options = {}) {
     const [result] = await db.execute(`INSERT INTO cluster_nodes
-      (node_uuid, node_name, tailscale_ip, public_url, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5]);
+      (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5]);
     const node = await this.findById(result.insertId);
-    const syncPayload = await syncPayloadService.getClusterNodePayloadById(node.id);
-    await syncEventService.createEntitySyncEvent('cluster_node', syncPayload);
+    if (node && !options.skipSyncEvent) {
+      const syncPayload = await syncPayloadService.getClusterNodePayloadById(node.id);
+      await syncEventService.createEntitySyncEvent('cluster_node', syncPayload);
+    }
     return node;
   }
 
-  async updateNode(id, payload) {
-    await db.execute(`UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, role=?, status=?, is_self=?,
+  async updateNode(id, payload, options = {}) {
+    await db.execute(`UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, role=?, status=?, is_self=?,
       last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=? WHERE id=?`,
-    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5, id]);
+    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, id]);
     const node = await this.findById(id);
-    if (node) {
+    if (node && !options.skipSyncEvent) {
       const syncPayload = await syncPayloadService.getClusterNodePayloadById(id);
       await syncEventService.createEntitySyncEvent('cluster_node', syncPayload);
     }
@@ -130,16 +188,16 @@ class ClusterNodeRepository {
 
   async createJoinRequest(payload) {
     const [result] = await db.execute(`INSERT INTO cluster_join_requests
-      (node_name, tailscale_ip, public_url, requested_role, status, request_token_hash, secret_fingerprint, requester_metadata)
-      VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
-    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.requested_role, payload.request_token_hash, payload.secret_fingerprint, payload.requester_metadata]);
+      (node_uuid, node_name, tailscale_ip, public_url, port, requested_role, power_score, status, request_token_hash, secret_fingerprint, requester_metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)`,
+    [payload.node_uuid || null, payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.requested_role, payload.power_score ?? 5, payload.request_token_hash, payload.secret_fingerprint, toJsonValue(payload.requester_metadata)]);
     return this.findJoinRequestById(result.insertId);
   }
 
   async updateJoinRequest(id, payload) {
-    await db.execute(`UPDATE cluster_join_requests SET node_name=?, tailscale_ip=?, public_url=?, requested_role=?,
+    await db.execute(`UPDATE cluster_join_requests SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, requested_role=?, power_score=?,
       request_token_hash=?, secret_fingerprint=?, requester_metadata=? WHERE id=?`,
-    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.requested_role, payload.request_token_hash, payload.secret_fingerprint, payload.requester_metadata, id]);
+    [payload.node_uuid || null, payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.requested_role, payload.power_score ?? 5, payload.request_token_hash, payload.secret_fingerprint, toJsonValue(payload.requester_metadata), id]);
     return this.findJoinRequestById(id);
   }
 
