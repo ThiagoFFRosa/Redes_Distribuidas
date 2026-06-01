@@ -1,6 +1,6 @@
 const db = require('../database/connection');
 
-const mapNode = (row) => ({ ...row, is_self: Number(row.is_self) });
+const mapNode = (row) => ({ ...row, is_self: Number(row.is_self), power_score: Number(row.power_score ?? 5) });
 
 class ClusterNodeRepository {
   async getSelfNode() {
@@ -54,7 +54,8 @@ class ClusterNodeRepository {
       last_heartbeat_at: data.last_heartbeat_at || null,
       last_healthcheck_at: data.last_healthcheck_at || null,
       healthcheck_error: data.healthcheck_error || null,
-      metadata: data.metadata || null
+      metadata: data.metadata || null,
+      power_score: data.power_score ?? 5
     });
   }
 
@@ -80,7 +81,8 @@ class ClusterNodeRepository {
       status: data.status || 'ONLINE',
       last_healthcheck_at: now,
       last_heartbeat_at: now,
-      healthcheck_error: null
+      healthcheck_error: null,
+      power_score: data.power_score ?? 5
     };
     return this.upsertNodeByTailscaleIp(payload);
   }
@@ -89,16 +91,16 @@ class ClusterNodeRepository {
 
   async createNode(payload) {
     const [result] = await db.execute(`INSERT INTO cluster_nodes
-      (node_name, tailscale_ip, public_url, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata]);
+      (node_name, tailscale_ip, public_url, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5]);
     return this.findById(result.insertId);
   }
 
   async updateNode(id, payload) {
     await db.execute(`UPDATE cluster_nodes SET node_name=?, tailscale_ip=?, public_url=?, role=?, status=?, is_self=?,
-      last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=? WHERE id=?`,
-    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, id]);
+      last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=? WHERE id=?`,
+    [payload.node_name, payload.tailscale_ip, payload.public_url, payload.role, payload.status, payload.is_self, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, payload.metadata, payload.power_score ?? 5, id]);
     return this.findById(id);
   }
 

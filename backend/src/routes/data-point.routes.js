@@ -5,6 +5,7 @@ const { requireAuth } = require('../services/auth.service');
 const router = express.Router();
 const allowedTypes = new Set(['RIVER_LEVEL']);
 const allowedStatuses = new Set(['ACTIVE', 'INACTIVE']);
+const historicalChartService = require('../services/historical-chart.service');
 
 const optionalNumber = (value) => {
   if (value === undefined || value === null || value === '') return { value: null };
@@ -54,6 +55,23 @@ const validatePayload = (body) => {
 
 router.get('/', async (req, res, next) => {
   try { res.json({ ok: true, data: await repository.findAll(req.query) }); } catch (error) { next(error); }
+});
+
+
+router.get('/:id/historical-chart', async (req, res, next) => {
+  try {
+    const result = await historicalChartService.getHistoricalChart(req.params.id);
+    if (!result) return res.status(404).json({ ok: false, message: 'Ponto não encontrado.' });
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.post('/:id/historical-chart/regenerate', requireAuth, async (req, res, next) => {
+  try {
+    const result = await historicalChartService.regenerateChart(req.params.id);
+    if (!result) return res.status(404).json({ ok: false, message: 'Ponto não encontrado.' });
+    res.status(202).json(result);
+  } catch (error) { next(error); }
 });
 
 router.get('/:id', async (req, res, next) => {

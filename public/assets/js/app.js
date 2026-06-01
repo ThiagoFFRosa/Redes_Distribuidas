@@ -10,7 +10,9 @@ document.addEventListener('DOMContentLoaded', () => {
         dashboard: null,
         eventosDashboard: [],
         alertas: [],
-        fila: []
+        fila: [],
+        historicalChart: null,
+        currentHistoricalPointId: null
     };
 
     const apiFetch = async (url, options = {}) => {
@@ -125,6 +127,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!map) return;
         clearPointMarkers();
         state.pontos.forEach((p) => {
+            if (!Number.isFinite(Number(p.latitude)) || !Number.isFinite(Number(p.longitude))) return;
             const m = L.circleMarker([p.latitude, p.longitude], { radius: 8, fillColor: p.status === 'ACTIVE' ? '#0284c7' : '#94a3b8', color: '#fff', weight: 2, opacity: p.status === 'ACTIVE' ? 1 : 0.75, fillOpacity: p.status === 'ACTIVE' ? 0.85 : 0.45 }).addTo(map);
             m.bindPopup(`<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.city_region || '')}<br>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}<br>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}<br>Status: ${escapeHtml(p.status)}`);
             pointMarkers.push(m);
@@ -159,12 +162,60 @@ document.addEventListener('DOMContentLoaded', () => {
                 <tr class="hover:bg-slate-50">
                     <td class="p-4"><div class="font-medium text-dark">${escapeHtml(p.name)}</div><div class="text-xs text-slate-500">ID: ${p.id}</div></td>
                     <td class="p-4 text-slate-600">${escapeHtml(p.city_region || '-')}</td>
-                    <td class="p-4 text-xs font-mono text-slate-500">${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}</td>
+                    <td class="p-4 text-xs font-mono text-slate-500">${Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)) ? `${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}` : 'Sem localização'}</td>
                     <td class="p-4"><span class="px-2 py-1 rounded ${badge} text-xs font-semibold text-center inline-block w-20">${escapeHtml(p.status)}</span></td>
                     <td class="p-4 text-xs text-slate-600"><div>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}</div><div>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}</div></td>
-                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">Editar</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
+                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="historical-point" data-id="${p.id}" class="px-2 py-1 border rounded text-secondary hover:bg-teal-50">Histórico</button><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">Editar</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
                 </tr>`;
         });
+    };
+
+
+    const trendLabel = (trend) => ({ RISING: 'Subindo', FALLING: 'Baixando', STABLE: 'Estável', UNKNOWN: 'Desconhecida' }[trend] || trend || '-');
+    const formatMetric = (value, suffix = '') => hasValue(value) ? `${Number(value).toFixed(2)}${suffix}` : '-';
+
+    const closeHistoricalModal = () => {
+        document.getElementById('historical-modal')?.classList.add('hidden');
+        document.getElementById('historical-modal')?.classList.remove('flex');
+    };
+
+    const renderHistoricalChart = (payload) => {
+        const canvas = document.getElementById('historical-chart');
+        if (!canvas) return;
+        if (state.historicalChart) state.historicalChart.destroy();
+        state.historicalChart = new Chart(canvas, {
+            type: 'line',
+            data: { labels: payload?.labels || [], datasets: [{ label: `Cota histórica (${payload?.unit || 'm'})`, data: payload?.values || [], borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,0.12)', fill: true, tension: 0.25, pointRadius: 0 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } }, scales: { y: { title: { display: true, text: payload?.unit || 'm' } } } }
+        });
+    };
+
+    const loadHistoricalChart = async (pointId) => {
+        const data = await apiFetch(`/api/data-points/${pointId}/historical-chart`);
+        const point = data.data_point || state.pontos.find((p) => String(p.id) === String(pointId));
+        const summary = data.chart?.summary || {};
+        document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
+        document.getElementById('historical-message').textContent = data.message || '';
+        document.getElementById('historical-summary').innerHTML = `
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Período</span><strong>${escapeHtml(summary.date_start || '-')} a ${escapeHtml(summary.date_end || '-')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Medições</span><strong>${summary.total_measurements ?? '-'}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Mínimo</span><strong>${formatMetric(summary.min_value, 'm')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Máximo</span><strong>${formatMetric(summary.max_value, 'm')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Média</span><strong>${formatMetric(summary.average_value, 'm')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Tendência</span><strong>${escapeHtml(trendLabel(summary.trend))}</strong></div>`;
+        document.getElementById('historical-job').innerHTML = data.job ? `Processando em: <strong>${escapeHtml(data.job.assigned_node_name || '-')}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : '';
+        if (data.chart?.payload) renderHistoricalChart(data.chart.payload);
+        else renderHistoricalChart({ labels: [], values: [], unit: 'm' });
+    };
+
+    const openHistoricalModal = async (point) => {
+        state.currentHistoricalPointId = point.id;
+        document.getElementById('historical-modal')?.classList.remove('hidden');
+        document.getElementById('historical-modal')?.classList.add('flex');
+        document.getElementById('historical-title').textContent = `Histórico do ponto: ${point.name}`;
+        document.getElementById('historical-message').textContent = 'Carregando gráfico histórico...';
+        try { await loadHistoricalChart(point.id); }
+        catch (error) { document.getElementById('historical-message').textContent = error.message; }
     };
 
     const openEditPointModal = (point) => {
@@ -242,6 +293,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!select) return;
         select.innerHTML = '<option value="" disabled selected>Selecione um ponto...</option>';
         points.forEach((p) => { select.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} (${escapeHtml(p.city_region || 'sem região')})</option>`; });
+        const histSelect = document.getElementById('hist-data-point');
+        if (histSelect) {
+            histSelect.innerHTML = '<option value="">Criar ponto automaticamente</option>';
+            points.forEach((p) => { histSelect.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} (${escapeHtml(p.city_region || 'sem região')})</option>`; });
+        }
         renderSelectedPointThresholds();
     };
 
@@ -292,6 +348,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!btn) return;
         const point = state.pontos.find((p) => String(p.id) === String(btn.dataset.id));
         if (!point) return;
+        if (btn.dataset.action === 'historical-point') openHistoricalModal(point);
         if (btn.dataset.action === 'edit-point') openEditPointModal(point);
         if (btn.dataset.action === 'deactivate-point') openConfirmPointModal(point, 'deactivate');
         if (btn.dataset.action === 'reactivate-point') openConfirmPointModal(point, 'reactivate');
@@ -484,6 +541,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-sm font-mono text-slate-600">${s.tailscale_ip}</td>
                     <td class="p-4">${roleBadge}</td>
                     <td class="p-4">${statusInd}</td>
+                    <td class="p-4"><span class="font-mono">${s.power_score ?? 5}/10</span></td>
                     <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button>' : ''}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
                 </tr>`;
         });
@@ -526,8 +584,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('self-config-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         selfError.textContent = '';
-        const payload = { node_name: document.getElementById('self-node-name').value.trim(), tailscale_ip: document.getElementById('self-node-ip').value.trim(), public_url: document.getElementById('self-public-url').value.trim(), role: document.getElementById('self-role').value };
+        const payload = { node_name: document.getElementById('self-node-name').value.trim(), tailscale_ip: document.getElementById('self-node-ip').value.trim(), public_url: document.getElementById('self-public-url').value.trim(), role: document.getElementById('self-role').value, power_score: Number(document.getElementById('self-power-score')?.value || 5) };
         if (!payload.node_name || !payload.tailscale_ip) { selfError.textContent = 'Nome e IP são obrigatórios.'; return; }
+        if (!Number.isInteger(payload.power_score) || payload.power_score < 0 || payload.power_score > 10) { selfError.textContent = 'Ordem de potência deve ficar entre 0 e 10.'; return; }
         const resp = await fetch('/api/cluster/self', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) { selfError.textContent = data.message || 'Erro ao salvar configuração.'; return; }
@@ -580,7 +639,8 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         const err = document.getElementById('add-server-error');
         err.textContent = '';
-        const payload = { node_name: document.getElementById('add-node-name').value.trim(), tailscale_ip: document.getElementById('add-node-ip').value.trim(), public_url: document.getElementById('add-public-url').value.trim(), role: document.getElementById('add-role').value, status: 'UNKNOWN' };
+        const payload = { node_name: document.getElementById('add-node-name').value.trim(), tailscale_ip: document.getElementById('add-node-ip').value.trim(), public_url: document.getElementById('add-public-url').value.trim(), role: document.getElementById('add-role').value, status: 'UNKNOWN', power_score: Number(document.getElementById('add-power-score')?.value || 5) };
+        if (!Number.isInteger(payload.power_score) || payload.power_score < 0 || payload.power_score > 10) { err.textContent = 'Ordem de potência deve ficar entre 0 e 10.'; return; }
         const resp = await fetch('/api/cluster/nodes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) { err.textContent = data.message || 'Erro ao adicionar servidor.'; return; }
@@ -598,7 +658,42 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('self-node-ip').value = self.tailscale_ip || '';
       document.getElementById('self-public-url').value = self.public_url || '';
       document.getElementById('self-role').value = self.role || 'UNKNOWN';
+      document.getElementById('self-power-score').value = self.power_score ?? 5;
       openSelfModal();
+    });
+
+
+
+    document.getElementById('close-historical-modal')?.addEventListener('click', closeHistoricalModal);
+    document.getElementById('regenerate-historical-chart')?.addEventListener('click', async () => {
+        if (!state.currentHistoricalPointId) return;
+        await apiFetch(`/api/data-points/${state.currentHistoricalPointId}/historical-chart/regenerate`, { method: 'POST', body: JSON.stringify({}) });
+        await loadHistoricalChart(state.currentHistoricalPointId);
+    });
+
+    document.getElementById('form-import-historical')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const feedback = document.getElementById('hist-import-feedback');
+        const button = document.getElementById('hist-import-btn');
+        const formData = new FormData(e.target);
+        if (!document.getElementById('hist-file')?.files?.length) { feedback.textContent = 'Selecione um CSV.'; feedback.className = 'text-sm mt-3 text-red-600'; return; }
+        button.disabled = true; feedback.textContent = 'Enviando e importando...'; feedback.className = 'text-sm mt-3 text-slate-600';
+        try {
+            const response = await fetch('/api/imports/historical-csv', { method: 'POST', body: formData });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) throw new Error(data.message || 'Falha ao importar CSV.');
+            feedback.className = 'text-sm mt-3 text-green-600';
+            feedback.innerHTML = `Importação concluída: ${data.import.total_rows} linhas, ${data.import.imported_rows} importadas, ${data.import.failed_rows} falhas. <button type="button" data-import-historical-id="${data.data_point.id}" class="underline font-semibold">Ver gráfico histórico</button>`;
+            await loadDataPoints(); await loadActiveDataPoints();
+        } catch (error) { feedback.textContent = error.message; feedback.className = 'text-sm mt-3 text-red-600'; }
+        finally { button.disabled = false; }
+    });
+
+    document.getElementById('hist-import-feedback')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-import-historical-id]');
+        if (!btn) return;
+        const point = state.pontos.find((p) => String(p.id) === String(btn.dataset.importHistoricalId)) || { id: btn.dataset.importHistoricalId, name: 'Ponto importado' };
+        openHistoricalModal(point);
     });
 
     // Reativar icons finais

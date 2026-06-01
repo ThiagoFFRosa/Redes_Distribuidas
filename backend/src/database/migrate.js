@@ -7,7 +7,8 @@ const migrations = [
   require('./migrations/004_update_cluster_nodes_add_self_and_health_fields'),
   { id: '005_create_cluster_join_requests_table', ...require('./migrations/005_create_cluster_join_requests_table') },
   require('./migrations/006_create_monitoring_tables'),
-  require('./migrations/007_add_thresholds_to_data_points')
+  require('./migrations/007_add_thresholds_to_data_points'),
+  require('./migrations/008_historical_imports_processing_sync')
 ];
 
 const ensureMigrationsTable = async (connection) => {
