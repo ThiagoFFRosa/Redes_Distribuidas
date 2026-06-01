@@ -59,11 +59,11 @@ const upsertClusterNode = async (event, c) => {
     public_url: p.public_url ?? existing?.public_url ?? null,
     port: asInt(p.port, existing?.port ?? null),
     role: p.role || existing?.role || 'UNKNOWN',
-    status: p.status || existing?.status || 'UNKNOWN',
+    status: existing?.status || 'UNKNOWN',
     is_self: isSelf ? 1 : 0,
-    last_heartbeat_at: asDate(p.last_heartbeat_at) || existing?.last_heartbeat_at || null,
-    last_healthcheck_at: asDate(p.last_healthcheck_at) || existing?.last_healthcheck_at || null,
-    healthcheck_error: p.healthcheck_error ?? existing?.healthcheck_error ?? null,
+    last_heartbeat_at: existing?.last_heartbeat_at || null,
+    last_healthcheck_at: existing?.last_healthcheck_at || null,
+    healthcheck_error: existing?.healthcheck_error ?? null,
     metadata: json(p.metadata ?? existing?.metadata ?? null),
     power_score: asInt(p.power_score, existing?.power_score ?? 5)
   };

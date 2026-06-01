@@ -14,7 +14,7 @@ class ClusterStartupService {
     }
 
     console.log(`[cluster-db] servidor local: ${selfNode.node_name} / ${selfNode.tailscale_ip} / ${selfNode.role}`);
-    await repo.updateStatus(selfNode.id, 'ONLINE', null);
+    await repo.updateStatus(selfNode.id, 'ONLINE', null, { skipSyncEvent: true, reason: 'startup-health' });
 
     console.log('[cluster-db] consultando hosts externos no banco...');
     const onlineHosts = await repo.getOnlineHosts();

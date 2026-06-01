@@ -14,15 +14,15 @@ class ClusterHealthService {
   async checkNode(node) {
     const now = new Date();
     if (node.is_self) {
-      return repo.updateNode(node.id, { ...node, status: 'ONLINE', last_healthcheck_at: now, last_heartbeat_at: now, healthcheck_error: null });
+      return repo.updateNodeHealthStatus(node.id, { status: 'ONLINE', last_healthcheck_at: now, last_heartbeat_at: now, healthcheck_error: null }, { skipSyncEvent: true, reason: 'healthcheck' });
     }
 
     try {
       const response = await fetch(this.buildHealthUrl(node));
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return repo.updateNode(node.id, { ...node, status: 'ONLINE', last_healthcheck_at: now, last_heartbeat_at: now, healthcheck_error: null });
+      return repo.updateNodeHealthStatus(node.id, { status: 'ONLINE', last_healthcheck_at: now, last_heartbeat_at: now, healthcheck_error: null }, { skipSyncEvent: true, reason: 'healthcheck' });
     } catch (error) {
-      return repo.updateNode(node.id, { ...node, status: 'OFFLINE', last_healthcheck_at: now, healthcheck_error: String(error.message || 'erro').slice(0, 255) });
+      return repo.updateNodeHealthStatus(node.id, { status: 'OFFLINE', last_healthcheck_at: now, healthcheck_error: String(error.message || 'erro').slice(0, 255) }, { skipSyncEvent: true, reason: 'healthcheck' });
     }
   }
 

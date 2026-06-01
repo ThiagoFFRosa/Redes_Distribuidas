@@ -56,7 +56,7 @@ const applyBootstrapNodes = async (nodes = []) => {
       last_heartbeat_at: toMysqlDateTime(node.last_heartbeat_at),
       last_healthcheck_at: toMysqlDateTime(node.last_healthcheck_at),
       healthcheck_error: node.healthcheck_error || null
-    }, { skipSyncEvent: true });
+    }, { skipSyncEvent: true, reason: 'bootstrap' });
   }
   await repo.enforceSingleSelf();
 };
