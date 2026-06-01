@@ -3,6 +3,7 @@ const summary = document.getElementById('summary');
 const statusMsg = document.getElementById('statusMsg');
 const refreshBtn = document.getElementById('refreshBtn');
 const cleanupNodesBtn = document.getElementById('cleanupNodesBtn');
+const syncNowBtn = document.getElementById('syncNowBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const newServerUrlInput = document.getElementById('newServerUrl');
 const testConnectionBtn = document.getElementById('testConnectionBtn');
@@ -19,6 +20,7 @@ const inmetStatusMsg = document.getElementById('inmetStatusMsg');
 const inmetResults = document.getElementById('inmetResults');
 
 let polling = null;
+let syncStatusByNodeName = new Map();
 
 const showMessage = (message, isError = false) => {
   statusMsg.textContent = message;
@@ -45,7 +47,11 @@ const renderSummary = (data) => {
 };
 
 const renderServers = (servers) => {
-  serversBody.innerHTML = servers.map((server) => `<tr><td>${server.serverName}</td><td>${server.serverUrl}</td><td><span class="${server.online ? 'badge online' : 'badge offline'}">${server.online ? 'ONLINE' : 'OFFLINE'}</span></td><td><span class="${badgeClass(server)}">${server.role}</span></td><td>${server.publicUrl || '-'}</td><td>${formatLastSeen(server.lastSeen)}</td><td>${server.isHostingPublicFrontend ? '<span class="badge host">SIM</span>' : 'NÃO'}</td><td><button class="switch-btn" data-url="${server.serverUrl}" ${!server.online ? 'disabled' : ''}>Tornar HOST</button></td></tr>`).join('');
+  serversBody.innerHTML = servers.map((server) => {
+    const sync = syncStatusByNodeName.get(server.serverName) || {};
+    const syncLabel = sync.last_error ? `Erro: ${sync.last_error}` : (Number(sync.pending_events || 0) > 0 ? `Pendente` : 'Sync OK');
+    return `<tr><td>${server.serverName}</td><td>${server.serverUrl}</td><td><span class="${server.online ? 'badge online' : 'badge offline'}">${server.online ? 'ONLINE' : 'OFFLINE'}</span></td><td><span class="${badgeClass(server)}">${server.role}</span></td><td>${server.publicUrl || '-'}</td><td>${formatLastSeen(server.lastSeen)}</td><td>${server.isHostingPublicFrontend ? '<span class="badge host">SIM</span>' : 'NÃO'}</td><td>${sync.last_sync_at ? formatLastSeen(sync.last_sync_at) : '-'}<br><small>${syncLabel}</small></td><td>${sync.pending_events ?? '-'}</td><td><button class="switch-btn" data-url="${server.serverUrl}" ${!server.online ? 'disabled' : ''}>Tornar HOST</button></td></tr>`;
+  }).join('');
   document.querySelectorAll('.switch-btn').forEach((button) => button.addEventListener('click', async () => switchHost(button.dataset.url)));
 };
 
@@ -55,9 +61,21 @@ const loadServers = async (silent = false) => {
     if (response.status === 401) return (window.location.href = '/login.html');
     if (!response.ok) throw new Error('Falha ao buscar servidores.');
     const data = await response.json();
+    await loadSyncStatus();
     renderSummary(data); renderServers(data.servers);
     if (!silent) showMessage('Lista atualizada com sucesso.');
   } catch (error) { showMessage(error.message || 'Erro ao atualizar lista.', true); }
+};
+
+const loadSyncStatus = async () => {
+  try {
+    const response = await fetch('/api/sync/status');
+    if (!response.ok) return;
+    const data = await response.json();
+    syncStatusByNodeName = new Map((data.nodes || []).map((node) => [node.node_name, node]));
+  } catch (_error) {
+    syncStatusByNodeName = new Map();
+  }
 };
 
 const cleanupInvalidNodes = async () => { cleanupNodesBtn.disabled = true; try { const r = await fetch('/api/servers/cleanup', { method: 'POST' }); const d = await r.json(); if (!r.ok || !d.ok) throw new Error(d.message || 'Falha ao limpar nós inválidos.'); renderSummary(d); renderServers(d.servers); showMessage(d.message || 'Nós inválidos removidos com sucesso.'); } catch (e) { showMessage(e.message, true);} finally {cleanupNodesBtn.disabled=false;} };
@@ -105,6 +123,18 @@ const showView = (view) => {
 
 refreshBtn.addEventListener('click', () => loadServers());
 cleanupNodesBtn.addEventListener('click', cleanupInvalidNodes);
+syncNowBtn.addEventListener('click', async () => {
+  syncNowBtn.disabled = true;
+  showMessage('Sincronizando agora...');
+  try {
+    const response = await fetch('/api/sync/run-now', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || 'Falha ao executar sync manual.');
+    await loadServers(true);
+    showMessage('Sync manual concluído.');
+  } catch (error) { showMessage(error.message || 'Erro no sync manual.', true); }
+  finally { syncNowBtn.disabled = false; }
+});
 testConnectionBtn.addEventListener('click', async () => {
   const serverUrl = newServerUrlInput.value.trim(); if (!serverUrl) return showRegisterMessage('Informe a URL do servidor.', true);
   testConnectionBtn.disabled = true;

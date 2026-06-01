@@ -8,7 +8,8 @@ const migrations = [
   { id: '005_create_cluster_join_requests_table', ...require('./migrations/005_create_cluster_join_requests_table') },
   require('./migrations/006_create_monitoring_tables'),
   require('./migrations/007_add_thresholds_to_data_points'),
-  require('./migrations/008_historical_imports_processing_sync')
+  require('./migrations/008_historical_imports_processing_sync'),
+  require('./migrations/009_event_sync_foundation')
 ];
 
 const ensureMigrationsTable = async (connection) => {

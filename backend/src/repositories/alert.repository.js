@@ -1,4 +1,7 @@
+const crypto = require('crypto');
 const pool = require('../database/connection');
+const syncEventService = require('../services/sync-event.service');
+const syncPayloadService = require('../services/sync-payload.service');
 
 const toNullableNumber = (value) => (value == null ? null : Number(value));
 
@@ -30,17 +33,24 @@ const findAll = async ({ status, severity, limit = 100 } = {}) => {
 
 const create = async (payload) => {
   const [result] = await pool.execute(
-    `INSERT INTO alerts (data_point_id, measurement_id, alert_type, severity, current_value, unit, message, status, detected_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`,
-    [payload.data_point_id, payload.measurement_id || null, payload.alert_type, payload.severity, payload.current_value, payload.unit || 'm', payload.message, payload.detected_at]
+    `INSERT INTO alerts (uuid, data_point_id, measurement_id, alert_type, severity, current_value, unit, message, status, detected_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`,
+    [payload.uuid || crypto.randomUUID(), payload.data_point_id, payload.measurement_id || null, payload.alert_type, payload.severity, payload.current_value, payload.unit || 'm', payload.message, payload.detected_at]
   );
+  const syncPayload = await syncPayloadService.getAlertPayloadById(result.insertId);
+  await syncEventService.createEntitySyncEvent('alert', syncPayload);
   return result.insertId;
 };
 
 const resolve = async (id) => {
   await pool.execute("UPDATE alerts SET status = 'RESOLVED', resolved_at = NOW() WHERE id = ?", [id]);
   const [rows] = await pool.execute('SELECT * FROM alerts WHERE id = ? LIMIT 1', [id]);
-  return parse(rows[0]);
+  const alert = parse(rows[0]);
+  if (alert) {
+    const syncPayload = await syncPayloadService.getAlertPayloadById(id);
+    await syncEventService.createEntitySyncEvent('alert', syncPayload, 'RESOLVE');
+  }
+  return alert;
 };
 
 module.exports = { findAll, create, resolve };

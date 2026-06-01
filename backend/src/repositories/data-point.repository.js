@@ -1,4 +1,7 @@
+const crypto = require('crypto');
 const pool = require('../database/connection');
+const syncEventService = require('../services/sync-event.service');
+const syncPayloadService = require('../services/sync-payload.service');
 
 const toNullableNumber = (value) => (value == null ? null : Number(value));
 
@@ -65,9 +68,10 @@ const findAllWithLatestMeasurement = async () => {
 
 const create = async (payload) => {
   const [result] = await pool.execute(
-    `INSERT INTO data_points (name, type, latitude, longitude, city_region, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
+      payload.uuid || crypto.randomUUID(),
       payload.name,
       payload.type || 'RIVER_LEVEL',
       payload.latitude,
@@ -82,7 +86,10 @@ const create = async (payload) => {
       payload.created_by_user_id || null
     ]
   );
-  return findById(result.insertId);
+  const point = await findById(result.insertId);
+  const syncPayload = await syncPayloadService.getDataPointPayloadById(point.id);
+  await syncEventService.createEntitySyncEvent('data_point', syncPayload);
+  return point;
 };
 
 const update = async (id, payload) => {
@@ -106,12 +113,22 @@ const update = async (id, payload) => {
       id
     ]
   );
-  return findById(id);
+  const point = await findById(id);
+  if (point) {
+    const syncPayload = await syncPayloadService.getDataPointPayloadById(id);
+    await syncEventService.createEntitySyncEvent('data_point', syncPayload);
+  }
+  return point;
 };
 
 const setStatus = async (id, status) => {
   await pool.execute('UPDATE data_points SET status = ? WHERE id = ?', [status, id]);
-  return findById(id);
+  const point = await findById(id);
+  if (point) {
+    const syncPayload = await syncPayloadService.getDataPointPayloadById(id);
+    await syncEventService.createEntitySyncEvent('data_point', syncPayload, status === 'INACTIVE' ? 'SOFT_DELETE' : 'UPSERT');
+  }
+  return point;
 };
 
 const countActive = async () => {

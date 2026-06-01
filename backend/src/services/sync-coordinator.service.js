@@ -1,0 +1,129 @@
+const pool = require('../database/connection');
+const env = require('../config/env');
+const repo = require('./cluster-node.repository');
+const applyService = require('./sync-apply.service');
+
+const normalizeBaseUrl = (node) => {
+  const raw = node?.base_url || node?.public_url || (node?.tailscale_ip ? `http://${node.tailscale_ip}:${env.port}` : '');
+  return String(raw || '').replace(/\/$/, '');
+};
+
+const requestJson = async (url, options = {}, timeoutMs = 10000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', 'X-Cluster-Secret': env.sessionSecret, ...(options.headers || {}) },
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+    return data;
+  } finally { clearTimeout(timer); }
+};
+
+const listEvents = async ({ since = null, limit = 500 } = {}) => {
+  const safeLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+  const params = [];
+  let where = '';
+  if (since) { where = 'WHERE created_at > ?'; params.push(new Date(since).toISOString().slice(0, 19).replace('T', ' ')); }
+  const [rows] = await pool.execute(`SELECT * FROM sync_events ${where} ORDER BY created_at ASC, id ASC LIMIT ${safeLimit}`, params);
+  return rows.map((row) => ({ ...row, payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload }));
+};
+
+const updateCursor = async (remoteNodeUuid, lastSeen, error = null) => {
+  await pool.execute(
+    `INSERT INTO sync_node_cursors (remote_node_uuid, last_seen_event_created_at, last_sync_at, last_error)
+     VALUES (?, ?, NOW(), ?)
+     ON DUPLICATE KEY UPDATE last_seen_event_created_at=COALESCE(VALUES(last_seen_event_created_at), last_seen_event_created_at), last_sync_at=NOW(), last_error=VALUES(last_error)`,
+    [remoteNodeUuid, lastSeen || null, error]
+  );
+};
+
+const getCursor = async (remoteNodeUuid) => {
+  const [[row]] = await pool.execute('SELECT * FROM sync_node_cursors WHERE remote_node_uuid=? LIMIT 1', [remoteNodeUuid]);
+  return row || null;
+};
+
+const pullFromNode = async ({ node_uuid, base_url, limit = 500 }) => {
+  const node = node_uuid ? await repo.findByNodeUuid(node_uuid) : null;
+  const remoteUuid = node_uuid || node?.node_uuid;
+  const cursor = remoteUuid ? await getCursor(remoteUuid) : null;
+  const since = cursor?.last_seen_event_created_at || null;
+  const baseUrl = String(base_url || normalizeBaseUrl(node)).replace(/\/$/, '');
+  const data = await requestJson(`${baseUrl}/api/sync/events?limit=${limit}${since ? `&since=${encodeURIComponent(new Date(since).toISOString())}` : ''}`);
+  const summary = await applyService.applySyncEvents(data.events || []);
+  const lastSeen = (data.events || []).at(-1)?.created_at || since;
+  if (remoteUuid) await updateCursor(remoteUuid, lastSeen, null);
+  return { ok: true, pulled: data.events?.length || 0, ...summary };
+};
+
+const getPendingEventsForNode = async (nodeUuid, limit = 500) => {
+  const safeLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+  const [rows] = await pool.execute(
+    `SELECT se.* FROM sync_event_deliveries d JOIN sync_events se ON se.event_uuid=d.event_uuid
+      WHERE d.target_node_uuid=? AND d.status IN ('PENDING','FAILED') ORDER BY se.created_at ASC, se.id ASC LIMIT ${safeLimit}`,
+    [nodeUuid]
+  );
+  return rows.map((row) => ({ ...row, payload: typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload }));
+};
+
+const markDeliveries = async (nodeUuid, events, status, error = null) => {
+  for (const event of events) {
+    await pool.execute(
+      `UPDATE sync_event_deliveries SET status=?, attempts=attempts+1, last_error=?, sent_at=IF(?='SENT', NOW(), sent_at) WHERE event_uuid=? AND target_node_uuid=?`,
+      [status, error, status, event.event_uuid, nodeUuid]
+    );
+  }
+};
+
+const pushToNode = async ({ node_uuid, base_url, limit = 500 }) => {
+  const node = node_uuid ? await repo.findByNodeUuid(node_uuid) : null;
+  const remoteUuid = node_uuid || node?.node_uuid;
+  if (!remoteUuid) throw new Error('node_uuid obrigatório');
+  const events = await getPendingEventsForNode(remoteUuid, limit);
+  if (!events.length) return { ok: true, sent: 0, applied: 0, skipped: 0, failed: 0 };
+  const baseUrl = String(base_url || normalizeBaseUrl(node)).replace(/\/$/, '');
+  try {
+    const data = await requestJson(`${baseUrl}/api/sync/apply`, { method: 'POST', body: JSON.stringify({ events }) });
+    await markDeliveries(remoteUuid, events, data.failed ? 'FAILED' : 'SENT', data.failed ? 'remote failed some events' : null);
+    return { ok: true, sent: events.length, ...data };
+  } catch (error) {
+    await markDeliveries(remoteUuid, events, 'FAILED', error.message);
+    throw error;
+  }
+};
+
+const fullBootstrap = async ({ host_url }) => {
+  const baseUrl = String(host_url || '').replace(/\/$/, '');
+  if (!baseUrl) throw new Error('host_url obrigatório');
+  const identity = await requestJson(`${baseUrl}/api/cluster/self-identity`);
+  let since = null;
+  let pulled = 0;
+  while (true) {
+    const data = await requestJson(`${baseUrl}/api/sync/events?limit=500${since ? `&since=${encodeURIComponent(since)}` : ''}`);
+    const events = data.events || [];
+    if (!events.length) break;
+    await applyService.applySyncEvents(events);
+    pulled += events.length;
+    since = new Date(events.at(-1).created_at).toISOString();
+    if (events.length < 500) break;
+  }
+  if (identity.node_uuid) await updateCursor(identity.node_uuid, since ? new Date(since).toISOString().slice(0, 19).replace('T', ' ') : null, null);
+  return { ok: true, host: identity, pulled };
+};
+
+const getStatus = async () => {
+  const self = await repo.getSelfNode();
+  const nodes = await repo.getExternalNodes();
+  const result = [];
+  for (const node of nodes) {
+    const [[cursor]] = await pool.execute('SELECT * FROM sync_node_cursors WHERE remote_node_uuid=? LIMIT 1', [node.node_uuid]);
+    const [[pending]] = await pool.execute("SELECT COUNT(*) AS total FROM sync_event_deliveries WHERE target_node_uuid=? AND status IN ('PENDING','FAILED')", [node.node_uuid]);
+    result.push({ node_uuid: node.node_uuid, node_name: node.node_name, status: node.status, last_sync_at: cursor?.last_sync_at || null, pending_events: Number(pending?.total || 0), last_error: cursor?.last_error || null });
+  }
+  return { ok: true, self, nodes: result };
+};
+
+module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, getStatus, updateCursor, normalizeBaseUrl };

@@ -1,4 +1,7 @@
+const crypto = require('crypto');
 const pool = require('../database/connection');
+const syncEventService = require('./sync-event.service');
+const syncPayloadService = require('./sync-payload.service');
 const dataPointRepository = require('../repositories/data-point.repository');
 
 const CHART_TYPE = 'HISTORICAL_RIVER_LEVEL';
@@ -95,10 +98,10 @@ const regenerateChart = async (dataPointId, importId = null) => {
     [dataPointId, importId, estimatedSeconds]
   );
   await pool.execute(
-    `INSERT INTO chart_cache (data_point_id, chart_type, status)
-     VALUES (?, ?, 'GENERATING')
+    `INSERT INTO chart_cache (uuid, data_point_id, chart_type, status)
+     VALUES (?, ?, ?, 'GENERATING')
      ON DUPLICATE KEY UPDATE status = IF(status='READY', 'STALE', 'GENERATING'), error_message=NULL`,
-    [dataPointId, CHART_TYPE]
+    [crypto.randomUUID(), dataPointId, CHART_TYPE]
   );
   const [[job]] = await pool.execute('SELECT * FROM chart_generation_jobs WHERE id=?', [result.insertId]);
   return { ok: true, data_point: dataPoint, job, message: 'Geração de gráfico enfileirada.' };
@@ -111,10 +114,10 @@ const generateChartForJob = async (job, selfNode) => {
     [selfNode?.id || null, selfNode?.node_name || 'local', job.id]
   );
   await pool.execute(
-    `INSERT INTO chart_cache (data_point_id, chart_type, status, generated_by_node_id, generated_by_node_name)
-     VALUES (?, ?, 'GENERATING', ?, ?)
+    `INSERT INTO chart_cache (uuid, data_point_id, chart_type, status, generated_by_node_id, generated_by_node_name)
+     VALUES (?, ?, ?, 'GENERATING', ?, ?)
      ON DUPLICATE KEY UPDATE status=IF(status='READY','STALE','GENERATING'), generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_name=VALUES(generated_by_node_name), error_message=NULL`,
-    [dataPointId, CHART_TYPE, selfNode?.id || null, selfNode?.node_name || 'local']
+    [crypto.randomUUID(), dataPointId, CHART_TYPE, selfNode?.id || null, selfNode?.node_name || 'local']
   );
 
   const [rows] = await pool.execute(
@@ -142,12 +145,17 @@ const generateChartForJob = async (job, selfNode) => {
   const payload = { labels, values, unit: 'm', downsampled: step > 1, full_count: total, step };
   await pool.execute('UPDATE chart_generation_jobs SET progress_percent=80 WHERE id=?', [job.id]);
   await pool.execute(
-    `INSERT INTO chart_cache (data_point_id, chart_type, status, generated_by_node_id, generated_by_node_name, total_points, date_start, date_end, payload, summary, generated_at)
-     VALUES (?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, NOW())
+    `INSERT INTO chart_cache (uuid, data_point_id, chart_type, status, generated_by_node_id, generated_by_node_name, total_points, date_start, date_end, payload, summary, generated_at)
+     VALUES (?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, NOW())
      ON DUPLICATE KEY UPDATE status='READY', generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_name=VALUES(generated_by_node_name), total_points=VALUES(total_points), date_start=VALUES(date_start), date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), error_message=NULL, generated_at=NOW()`,
-    [dataPointId, CHART_TYPE, selfNode?.id || null, selfNode?.node_name || 'local', total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary)]
+    [crypto.randomUUID(), dataPointId, CHART_TYPE, selfNode?.id || null, selfNode?.node_name || 'local', total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary)]
   );
   await pool.execute("UPDATE chart_generation_jobs SET status='DONE', progress_percent=100, finished_at=NOW() WHERE id=?", [job.id]);
+  const [[cacheRow]] = await pool.execute('SELECT id FROM chart_cache WHERE data_point_id=? AND chart_type=? LIMIT 1', [dataPointId, CHART_TYPE]);
+  if (cacheRow) {
+    const syncPayload = await syncPayloadService.getChartCachePayloadById(cacheRow.id);
+    await syncEventService.createEntitySyncEvent('chart_cache', syncPayload);
+  }
   return { payload, summary };
 };
 

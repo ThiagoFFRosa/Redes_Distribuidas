@@ -1,10 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const readline = require('readline');
 const pool = require('../database/connection');
 const dataPointRepository = require('../repositories/data-point.repository');
-const syncService = require('./sync.service');
+const syncEventService = require('./sync-event.service');
+const syncPayloadService = require('./sync-payload.service');
 const chartService = require('./historical-chart.service');
 
 const BATCH_SIZE = 500;
@@ -108,11 +110,11 @@ const ensureDataPoint = async (fields, file, userId) => {
 
 const flushRows = async (rows) => {
   if (!rows.length) return;
-  const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(',');
+  const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(',');
   const params = [];
-  rows.forEach((row) => params.push(row.data_point_id, row.import_id, row.measured_at, row.raw_value, row.raw_unit, row.value, row.unit, row.max_value, row.min_value));
+  rows.forEach((row) => params.push(row.uuid || crypto.randomUUID(), row.data_point_id, row.import_id, row.measured_at, row.raw_value, row.raw_unit, row.value, row.unit, row.max_value, row.min_value));
   await pool.execute(
-    `INSERT INTO historical_measurements (data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value)
+    `INSERT INTO historical_measurements (uuid, data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value)
      VALUES ${placeholders}
      ON DUPLICATE KEY UPDATE import_id=VALUES(import_id), raw_value=VALUES(raw_value), raw_unit=VALUES(raw_unit), value=VALUES(value), unit=VALUES(unit), max_value=VALUES(max_value), min_value=VALUES(min_value), source='CSV_IMPORT'`,
     params
@@ -125,9 +127,9 @@ const importHistoricalCsv = async (req, userId) => {
   const dataPoint = await ensureDataPoint(fields, file, userId);
   const sensorName = String(fields.sensor_name || '').trim() || dataPoint.name || filenameToSensorName(file.originalname);
   const [importResult] = await pool.execute(
-    `INSERT INTO historical_imports (data_point_id, original_filename, sensor_name, status, uploaded_by_user_id)
-     VALUES (?, ?, ?, 'IMPORTING', ?)`,
-    [dataPoint.id, file.originalname, sensorName, userId || null]
+    `INSERT INTO historical_imports (uuid, data_point_id, original_filename, sensor_name, status, uploaded_by_user_id)
+     VALUES (?, ?, ?, ?, 'IMPORTING', ?)`,
+    [crypto.randomUUID(), dataPoint.id, file.originalname, sensorName, userId || null]
   );
   const importId = importResult.insertId;
   let totalRows = 0, importedRows = 0, failedRows = 0;
@@ -171,17 +173,13 @@ const importHistoricalCsv = async (req, userId) => {
     const chartQueued = await chartService.regenerateChart(dataPoint.id, importId);
     const [[historicalImport]] = await pool.execute('SELECT * FROM historical_imports WHERE id=?', [importId]);
     const [[job]] = await pool.execute('SELECT * FROM chart_generation_jobs WHERE id=?', [chartQueued.job.id]);
-    const events = [
-      { entity_type: 'data_point', entity_id: String(dataPoint.id), payload: dataPoint },
-      { entity_type: 'historical_import', entity_id: String(importId), payload: historicalImport },
-      { entity_type: 'chart_generation_job', entity_id: String(job.id), payload: job }
-    ];
-    const [measurements] = await pool.execute('SELECT data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value, source FROM historical_measurements WHERE import_id=?', [importId]);
-    measurements.forEach((m) => {
-      const measuredAt = m.measured_at instanceof Date ? m.measured_at.toISOString().slice(0, 10) : String(m.measured_at).slice(0, 10);
-      events.push({ entity_type: 'historical_measurement', entity_id: `${m.data_point_id}:${measuredAt}`, payload: { ...m, measured_at: measuredAt } });
-    });
-    await syncService.createOutboxEvents(events);
+    const importPayload = await syncPayloadService.getHistoricalImportPayloadById(importId);
+    await syncEventService.createEntitySyncEvent('historical_import', importPayload);
+    const [measurements] = await pool.execute('SELECT id FROM historical_measurements WHERE import_id=? ORDER BY measured_at ASC', [importId]);
+    for (const measurement of measurements) {
+      const measurementPayload = await syncPayloadService.getHistoricalMeasurementPayloadById(measurement.id);
+      await syncEventService.createEntitySyncEvent('historical_measurement', measurementPayload);
+    }
     return { ok: true, import: historicalImport, data_point: dataPoint, job };
   } catch (error) {
     await pool.execute("UPDATE historical_imports SET status='FAILED', total_rows=?, imported_rows=?, failed_rows=?, error_message=?, completed_at=NOW() WHERE id=?", [totalRows, importedRows, failedRows, error.message, importId]);

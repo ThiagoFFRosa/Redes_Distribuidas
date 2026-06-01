@@ -1,4 +1,7 @@
+const crypto = require('crypto');
 const pool = require('../database/connection');
+const syncEventService = require('../services/sync-event.service');
+const syncPayloadService = require('../services/sync-payload.service');
 
 const parse = (row) => row && ({ ...row, value: Number(row.value), latitude: row.latitude == null ? null : Number(row.latitude), longitude: row.longitude == null ? null : Number(row.longitude) });
 
@@ -43,15 +46,18 @@ const findLatestByDataPointAsc = async (dataPointId, limit = 12) => {
 
 const create = async (payload) => {
   const [result] = await pool.execute(
-    `INSERT INTO measurements (data_point_id, measurement_type, value, unit, measured_at, source, observation, created_by_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [payload.data_point_id, payload.measurement_type || 'RIVER_LEVEL', payload.value, payload.unit || 'm', payload.measured_at, payload.source || 'MANUAL', payload.observation || null, payload.created_by_user_id || null]
+    `INSERT INTO measurements (uuid, data_point_id, measurement_type, value, unit, measured_at, source, observation, created_by_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.uuid || crypto.randomUUID(), payload.data_point_id, payload.measurement_type || 'RIVER_LEVEL', payload.value, payload.unit || 'm', payload.measured_at, payload.source || 'MANUAL', payload.observation || null, payload.created_by_user_id || null]
   );
   const [rows] = await pool.execute(`SELECT m.*, dp.name AS data_point_name, dp.city_region, dp.latitude, dp.longitude
      FROM measurements m
      JOIN data_points dp ON dp.id = m.data_point_id
      WHERE m.id = ? LIMIT 1`, [result.insertId]);
-  return parse(rows[0]);
+  const measurement = parse(rows[0]);
+  const syncPayload = await syncPayloadService.getMeasurementPayloadById(measurement.id);
+  await syncEventService.createEntitySyncEvent('measurement', syncPayload);
+  return measurement;
 };
 
 const chartRiverLevel = async (limit = 8) => {
