@@ -15,7 +15,7 @@ class HeartbeatService {
       if (!selfNode) {
         console.log('[cluster-health] Servidor atual ainda não configurado no banco.');
       } else {
-        await clusterNodeRepo.updateStatus(selfNode.id, 'ONLINE', null);
+        await clusterNodeRepo.updateStatus(selfNode.id, 'ONLINE', null, { skipSyncEvent: true, reason: 'heartbeat' });
         await clusterHealthService.checkAllNodes();
       }
     } catch (error) {

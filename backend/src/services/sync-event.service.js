@@ -25,9 +25,19 @@ const getSelfIdentity = async (connection = pool) => {
   return rows[0] || null;
 };
 
+const CLUSTER_NODE_SKIP_REASONS = new Set(['healthcheck', 'heartbeat', 'remote-sync', 'bootstrap', 'startup-health']);
+
 const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', payload }, connection = pool, options = {}) => {
-  if (options.skipSyncEvent || shouldSkipSyncEvent()) return null;
   if (!entityType || !entityKey) return null;
+  const reason = options.reason || 'unspecified';
+  if (entityType === 'cluster_node') {
+    console.log(`[sync-event] tentativa cluster_node key=${String(entityKey)} reason=${reason}`);
+    if (CLUSTER_NODE_SKIP_REASONS.has(reason)) {
+      console.log(`[sync-event] cluster_node ignorado reason=${reason}`);
+      return null;
+    }
+  }
+  if (options.skipSyncEvent || shouldSkipSyncEvent()) return null;
 
   const self = await getSelfIdentity(connection);
   if (!self?.node_uuid) {
@@ -38,6 +48,16 @@ const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', pa
   const eventUuid = newUuid();
   const createdAt = nowMysql();
   const payloadHash = hashPayload(payload);
+  const [[duplicate]] = await connection.execute(
+    `SELECT id FROM sync_events
+      WHERE entity_type = ? AND entity_key = ? AND operation = ? AND payload_hash = ?
+      LIMIT 1`,
+    [entityType, String(entityKey), operation, payloadHash]
+  );
+  if (duplicate) {
+    if (entityType === 'cluster_node') console.debug(`[sync-event] duplicado ignorado entity=cluster_node key=${String(entityKey)}`);
+    return null;
+  }
   const sizeBytes = payloadSizeBytes(payload);
   const logPrefix = sizeBytes > 100 * 1024 ? '[sync-event] aviso: payload grande' : '[sync-event] criado';
   console.log(`${logPrefix} entity=${entityType} key=${String(entityKey)} size=${formatKb(sizeBytes)}`);
