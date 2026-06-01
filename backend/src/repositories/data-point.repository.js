@@ -12,6 +12,18 @@ const toApi = (row) => row && ({
   measurement_unit: row.measurement_unit || 'm'
 });
 
+const toApiWithLatestMeasurement = (row) => {
+  if (!row) return null;
+  const point = toApi(row);
+  point.latest_measurement = row.latest_measurement_id ? {
+    id: row.latest_measurement_id,
+    value: Number(row.latest_measurement_value),
+    unit: row.latest_measurement_unit || point.measurement_unit || 'm',
+    measured_at: row.latest_measurement_measured_at
+  } : null;
+  return point;
+};
+
 const findAll = async ({ status, type } = {}) => {
   const where = [];
   const params = [];
@@ -27,6 +39,28 @@ const findAll = async ({ status, type } = {}) => {
 const findById = async (id) => {
   const [rows] = await pool.execute('SELECT * FROM data_points WHERE id = ? LIMIT 1', [id]);
   return toApi(rows[0]);
+};
+
+
+const findAllWithLatestMeasurement = async () => {
+  const [rows] = await pool.execute(
+    `SELECT dp.*,
+            m.id AS latest_measurement_id,
+            m.value AS latest_measurement_value,
+            m.unit AS latest_measurement_unit,
+            m.measured_at AS latest_measurement_measured_at
+       FROM data_points dp
+       LEFT JOIN measurements m
+         ON m.id = (
+           SELECT m2.id
+             FROM measurements m2
+            WHERE m2.data_point_id = dp.id
+            ORDER BY m2.measured_at DESC, m2.id DESC
+            LIMIT 1
+         )
+      ORDER BY dp.name ASC`
+  );
+  return rows.map(toApiWithLatestMeasurement);
 };
 
 const create = async (payload) => {
@@ -85,4 +119,4 @@ const countActive = async () => {
   return Number(rows[0]?.total || 0);
 };
 
-module.exports = { findAll, findById, create, update, setStatus, countActive };
+module.exports = { findAll, findById, findAllWithLatestMeasurement, create, update, setStatus, countActive };

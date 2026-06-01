@@ -19,6 +19,7 @@
             }
         }
     </script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="/assets/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
 </head>
@@ -72,7 +73,7 @@
                 </div>
                 <div>
                     <p class="text-sm text-slate-500 font-medium">Pontos Monitorados</p>
-                    <p class="text-2xl font-bold text-dark">42</p>
+                    <p id="public-stat-points" class="text-2xl font-bold text-dark">-</p>
                 </div>
             </div>
             <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex items-center gap-4">
@@ -89,8 +90,8 @@
                     <i data-lucide="siren"></i>
                 </div>
                 <div>
-                    <p class="text-sm text-slate-500 font-medium">Alertas Simulados</p>
-                    <p class="text-2xl font-bold text-dark">5</p>
+                    <p class="text-sm text-slate-500 font-medium">Pontos em Atenção</p>
+                    <p id="public-stat-alerts" class="text-2xl font-bold text-dark">-</p>
                 </div>
             </div>
             <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100 flex items-center gap-4">
@@ -99,7 +100,7 @@
                 </div>
                 <div>
                     <p class="text-sm text-slate-500 font-medium">Última Atualização</p>
-                    <p class="text-2xl font-bold text-dark">Agora</p>
+                    <p id="public-stat-updated" class="text-2xl font-bold text-dark">-</p>
                 </div>
             </div>
         </div>
@@ -144,17 +145,38 @@
         </div>
     </section>
 
-    <!-- Mapa Mockado Visual -->
+    <!-- Mapa público real -->
     <section class="py-12 bg-slate-100 border-y border-slate-200">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center flex flex-col items-center">
-            <h2 class="text-2xl font-bold text-dark mb-8">Mapa de Pontos de Monitoramento</h2>
-            <div class="w-full max-w-4xl aspect-[21/9] bg-white rounded-xl shadow-inner border border-slate-200 flex items-center justify-center relative overflow-hidden">
-                <!-- Mapa ilustrativo (pode ser substituído por mapa real na dashboard) -->
-                <div class="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]"></div>
-                <div class="relative z-10 text-slate-400 flex flex-col items-center">
-                    <i data-lucide="map" class="w-16 h-16 mb-4"></i>
-                    <p class="text-lg">Mapa Interativo e Dados em Tempo Real disponíveis no Painel</p>
-                    <a href="/login" class="mt-4 text-primary font-medium hover:underline">Acessar Painel &rarr;</a>
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-8">
+                <h2 class="text-3xl font-bold text-dark mb-3">Mapa de Pontos de Monitoramento</h2>
+                <p class="text-lg text-slate-600 max-w-3xl mx-auto">Visualize os pontos cadastrados, seus níveis recentes e a situação operacional.</p>
+                <p id="public-map-status" class="text-sm text-slate-500 mt-3">Carregando pontos do banco...</p>
+            </div>
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div id="public-monitoring-map" class="public-monitoring-map"></div>
+                <div id="public-point-details" class="hidden border-t border-slate-100 p-6 bg-white"></div>
+            </div>
+            <div class="mt-8 bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div class="p-5 border-b border-slate-100">
+                    <h3 class="font-bold text-dark">Resumo dos pontos monitorados</h3>
+                    <p class="text-sm text-slate-500 mt-1">Dados públicos carregados diretamente do banco.</p>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm min-w-[760px]">
+                        <thead class="bg-slate-50 text-slate-500 border-b border-slate-200">
+                            <tr>
+                                <th class="p-4 font-medium">Ponto</th>
+                                <th class="p-4 font-medium">Região</th>
+                                <th class="p-4 font-medium">Última medição</th>
+                                <th class="p-4 font-medium">Situação</th>
+                                <th class="p-4 font-medium">Atualizado em</th>
+                            </tr>
+                        </thead>
+                        <tbody id="public-points-tbody" class="divide-y divide-slate-100">
+                            <tr><td colspan="5" class="p-5 text-center text-slate-500">Carregando...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -172,6 +194,9 @@
         </div>
     </footer>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/assets/js/public-monitoring.js"></script>
     <script>
         lucide.createIcons();
     </script>
