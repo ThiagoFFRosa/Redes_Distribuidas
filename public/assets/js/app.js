@@ -30,6 +30,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
     const moneyNumber = (value) => Number(value || 0).toFixed(2);
+    const hasValue = (value) => value !== null && value !== undefined && value !== '';
+    const formatLevel = (value, unit = 'm') => hasValue(value) ? `${Number(value).toFixed(2)}${escapeHtml(unit || 'm')}` : 'Não configurado';
     const dateLabel = (value) => value ? new Date(value).toLocaleString('pt-BR') : '-';
     const setFeedback = (id, message, isError = false) => {
         const el = document.getElementById(id);
@@ -113,7 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
         clearPointMarkers();
         state.pontos.forEach((p) => {
             const m = L.circleMarker([p.latitude, p.longitude], { radius: 8, fillColor: p.status === 'ACTIVE' ? '#0284c7' : '#94a3b8', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8 }).addTo(map);
-            m.bindPopup(`<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.city_region || '')}<br>Status: ${escapeHtml(p.status)}`);
+            m.bindPopup(`<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.city_region || '')}<br>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}<br>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}<br>Status: ${escapeHtml(p.status)}`);
             pointMarkers.push(m);
         });
     };
@@ -137,7 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if(!tbody) return;
         tbody.innerHTML = '';
         if (!state.pontos.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="p-8 text-center text-slate-500">Nenhum ponto cadastrado no banco.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="p-8 text-center text-slate-500">Nenhum ponto cadastrado no banco.</td></tr>';
             return;
         }
         state.pontos.forEach(p => {
@@ -148,9 +150,28 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-slate-600">${escapeHtml(p.city_region || '-')}</td>
                     <td class="p-4 text-xs font-mono text-slate-500">${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}</td>
                     <td class="p-4"><span class="px-2 py-1 rounded ${badge} text-xs font-semibold text-center inline-block w-20">${escapeHtml(p.status)}</span></td>
+                    <td class="p-4 text-xs text-slate-600"><div>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}</div><div>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}</div></td>
                     <td class="p-4 text-right"><button class="px-2 py-1 border rounded text-slate-500 cursor-not-allowed" title="Edição completa fica para próxima etapa">Editar</button> <button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button></td>
                 </tr>`;
         });
+    };
+
+    const renderSelectedPointThresholds = () => {
+        const select = document.getElementById('dado-ponto');
+        const card = document.getElementById('dado-limites-card');
+        const unitInput = document.getElementById('dado-unidade');
+        const suffix = document.getElementById('dado-valor-unit-suffix');
+        if (!select || !card) return;
+        const selectedPoint = state.pontos.find((p) => String(p.id) === String(select.value));
+        if (!selectedPoint) { card.classList.add('hidden'); return; }
+        const unit = selectedPoint.measurement_unit || 'm';
+        if (unitInput) unitInput.value = unit === 'm' ? 'Metros (m)' : unit;
+        if (suffix) suffix.textContent = unit;
+        const hasThresholds = hasValue(selectedPoint.warning_level) && hasValue(selectedPoint.critical_level);
+        card.classList.remove('hidden');
+        card.innerHTML = hasThresholds
+            ? `<h4 class="font-bold text-dark mb-2">Limites deste ponto</h4><div class="grid grid-cols-1 sm:grid-cols-3 gap-2"><span>Normal: <b>${formatLevel(selectedPoint.normal_level, unit)}</b></span><span>Risco: <b>${formatLevel(selectedPoint.warning_level, unit)}</b></span><span>Crítico: <b>${formatLevel(selectedPoint.critical_level, unit)}</b></span></div>`
+            : '<h4 class="font-bold text-dark mb-2">Limites deste ponto</h4><p>Este ponto ainda não possui limites configurados. O sistema usará valores genéricos temporários.</p>';
     };
 
     const populateDataPointSelect = (points) => {
@@ -158,6 +179,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!select) return;
         select.innerHTML = '<option value="" disabled selected>Selecione um ponto...</option>';
         points.forEach((p) => { select.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} (${escapeHtml(p.city_region || 'sem região')})</option>`; });
+        renderSelectedPointThresholds();
     };
 
     const loadDataPoints = async () => {
@@ -171,23 +193,32 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             setFeedback('pontos-feedback', error.message, true);
             const tbody = document.getElementById('tbody-pontos');
-            if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="p-8 text-center text-red-600">${escapeHtml(error.message)}</td></tr>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="p-8 text-center text-red-600">${escapeHtml(error.message)}</td></tr>`;
         }
     };
 
     const loadActiveDataPoints = async () => {
-        try { const resp = await apiFetch('/api/data-points?status=ACTIVE'); populateDataPointSelect(resp.data || []); }
+        try { const resp = await apiFetch('/api/data-points?status=ACTIVE'); state.pontos = resp.data || []; populateDataPointSelect(state.pontos); }
         catch (error) { setFeedback('inserir-feedback', error.message, true); }
     };
 
     document.getElementById('form-cadastrar-ponto')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         if(!selectedLatLng) { setFeedback('pontos-feedback', 'Clique no mapa para selecionar latitude e longitude.', true); return; }
-        const payload = { name: document.getElementById('pt-nome').value.trim(), type: 'RIVER_LEVEL', latitude: selectedLatLng.lat, longitude: selectedLatLng.lng, city_region: document.getElementById('pt-cidade').value.trim(), status: 'ACTIVE' };
+        const normalLevel = document.getElementById('pt-normal').value;
+        const warningLevel = document.getElementById('pt-risco').value;
+        const criticalLevel = document.getElementById('pt-critico').value;
+        const normalNumber = normalLevel === '' ? null : Number(normalLevel);
+        const warningNumber = warningLevel === '' ? null : Number(warningLevel);
+        const criticalNumber = criticalLevel === '' ? null : Number(criticalLevel);
+        if ((normalNumber !== null && normalNumber < 0) || (warningNumber !== null && warningNumber < 0) || (criticalNumber !== null && criticalNumber < 0)) { setFeedback('pontos-feedback', 'Os níveis devem ser valores numéricos positivos.', true); return; }
+        if (warningNumber !== null && criticalNumber !== null && criticalNumber <= warningNumber) { setFeedback('pontos-feedback', 'O nível crítico deve ser maior que o nível de risco.', true); return; }
+        if (normalNumber !== null && warningNumber !== null && warningNumber <= normalNumber) { setFeedback('pontos-feedback', 'O nível de risco deve ser maior que o nível normal.', true); return; }
+        const payload = { name: document.getElementById('pt-nome').value.trim(), type: 'RIVER_LEVEL', latitude: selectedLatLng.lat, longitude: selectedLatLng.lng, city_region: document.getElementById('pt-cidade').value.trim(), status: 'ACTIVE', normal_level: normalNumber, warning_level: warningNumber, critical_level: criticalNumber, measurement_unit: document.getElementById('pt-unidade').value.trim() || 'm' };
         try {
             await apiFetch('/api/data-points', { method: 'POST', body: JSON.stringify(payload) });
             e.target.reset(); selectedLatLng = null; if(marker) map.removeLayer(marker); marker = null;
-            document.getElementById('pt-lat').value = ''; document.getElementById('pt-lng').value = '';
+            document.getElementById('pt-lat').value = ''; document.getElementById('pt-lng').value = ''; document.getElementById('pt-unidade').value = 'm';
             setFeedback('pontos-feedback', 'Ponto cadastrado com sucesso.');
             await loadDataPoints(); await loadDashboard();
         } catch (error) { setFeedback('pontos-feedback', error.message, true); }
@@ -222,7 +253,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('btn-dado-aleatorio')?.addEventListener('click', () => {
         const selects = document.getElementById('dado-ponto');
-        if(selects.options.length > 1) selects.selectedIndex = 1 + Math.floor(Math.random() * (selects.options.length - 1));
+        if(selects.options.length > 1) { selects.selectedIndex = 1 + Math.floor(Math.random() * (selects.options.length - 1)); renderSelectedPointThresholds(); }
         document.getElementById('dado-valor').value = (Math.random() * 5 + 1).toFixed(2);
         const obs = ['Nível subindo', 'Vazão normal', 'Alerta temporal', 'Chuva prevista'];
         document.getElementById('dado-obs').value = obs[Math.floor(Math.random() * obs.length)];
@@ -230,11 +261,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('form-inserir-dado')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const payload = { data_point_id: Number(document.getElementById('dado-ponto').value), measurement_type: 'RIVER_LEVEL', value: Number(document.getElementById('dado-valor').value), unit: 'm', measured_at: new Date().toISOString(), observation: document.getElementById('dado-obs').value.trim() || null };
+        const selectedPoint = state.pontos.find((p) => String(p.id) === String(document.getElementById('dado-ponto').value));
+        const payload = { data_point_id: Number(document.getElementById('dado-ponto').value), measurement_type: 'RIVER_LEVEL', value: Number(document.getElementById('dado-valor').value), unit: selectedPoint?.measurement_unit || 'm', measured_at: new Date().toISOString(), observation: document.getElementById('dado-obs').value.trim() || null };
         if (!payload.data_point_id) { setFeedback('inserir-feedback', 'Selecione um ponto.', true); return; }
         try {
             const resp = await apiFetch('/api/measurements', { method: 'POST', body: JSON.stringify(payload) });
-            setFeedback('inserir-feedback', resp.alert ? `Medição salva e alerta ${resp.alert.severity} gerado.` : 'Medição salva no banco.');
+            setFeedback('inserir-feedback', resp.alert ? `Medição salva e alerta gerado: ${resp.alert.severity}` : 'Medição salva sem alerta.');
             document.getElementById('dado-valor').value = ''; document.getElementById('dado-obs').value = '';
             await Promise.all([loadEventQueue(), loadAlerts(), loadDashboard()]);
         } catch (error) { setFeedback('inserir-feedback', error.message, true); }
@@ -273,25 +305,27 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.getElementById('tbody-alertas');
         if(!tbody) return;
         tbody.innerHTML = '';
-        if(!state.alertas.length) { tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-500">Nenhum alerta ativo no banco.</td></tr>'; return; }
+        if(!state.alertas.length) { tbody.innerHTML = '<tr><td colspan="8" class="p-8 text-center text-slate-500">Nenhum alerta ativo no banco.</td></tr>'; return; }
         state.alertas.forEach((a) => {
             const isCrit = a.severity === 'CRITICAL';
             const dotClass = isCrit ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]' : 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.5)]';
             const badgeClass = isCrit ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200';
-            tbody.innerHTML += `<tr class="hover:bg-slate-50 transition-colors bg-white"><td class="p-4 text-center"><div class="inline-flex w-3 h-3 rounded-full ${dotClass}"></div></td><td class="p-4 font-semibold text-dark">${escapeHtml(a.data_point_name)}</td><td class="p-4 font-mono font-bold text-slate-600">${moneyNumber(a.current_value)}${escapeHtml(a.unit)}</td><td class="p-4 text-slate-600">${escapeHtml(a.message)}</td><td class="p-4 text-slate-500 text-sm whitespace-nowrap">${dateLabel(a.detected_at)}</td><td class="p-4"><span class="px-2.5 py-1 text-xs font-semibold rounded-md ${badgeClass}">${escapeHtml(a.severity)}</span></td><td class="p-4 text-right"><button data-action="resolve-alert" data-id="${a.id}" class="px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-semibold">Resolver</button></td></tr>`;
+            tbody.innerHTML += `<tr class="hover:bg-slate-50 transition-colors bg-white"><td class="p-4 text-center"><div class="inline-flex w-3 h-3 rounded-full ${dotClass}"></div></td><td class="p-4 font-semibold text-dark"><div>${escapeHtml(a.data_point_name)}</div><div class="text-xs text-slate-500 font-normal">${escapeHtml(a.city_region || '')}</div></td><td class="p-4 font-mono font-bold text-slate-600">${moneyNumber(a.current_value)}${escapeHtml(a.unit)}</td><td class="p-4 text-xs text-slate-600"><div>Risco: ${formatLevel(a.warning_level, a.measurement_unit || a.unit)}</div><div>Crítico: ${formatLevel(a.critical_level, a.measurement_unit || a.unit)}</div></td><td class="p-4 text-slate-600">${escapeHtml(a.message)}</td><td class="p-4 text-slate-500 text-sm whitespace-nowrap">${dateLabel(a.detected_at)}</td><td class="p-4"><span class="px-2.5 py-1 text-xs font-semibold rounded-md ${badgeClass}">${escapeHtml(a.severity)}</span></td><td class="p-4 text-right"><button data-action="resolve-alert" data-id="${a.id}" class="px-3 py-1.5 rounded bg-green-600 hover:bg-green-700 text-white text-xs font-semibold">Resolver</button></td></tr>`;
         });
     };
 
     const loadAlerts = async () => {
         try { const resp = await apiFetch('/api/alerts?status=ACTIVE'); state.alertas = resp.data || []; renderTabelaAlertas(); }
-        catch (error) { const tbody = document.getElementById('tbody-alertas'); if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-red-600">${escapeHtml(error.message)}</td></tr>`; }
+        catch (error) { const tbody = document.getElementById('tbody-alertas'); if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="p-8 text-center text-red-600">${escapeHtml(error.message)}</td></tr>`; }
     };
+
+    document.getElementById('dado-ponto')?.addEventListener('change', renderSelectedPointThresholds);
 
     document.getElementById('tbody-alertas')?.addEventListener('click', async (e) => {
         const btn = e.target.closest('[data-action="resolve-alert"]');
         if (!btn) return;
         try { await apiFetch(`/api/alerts/${btn.dataset.id}/resolve`, { method: 'POST' }); await Promise.all([loadAlerts(), loadDashboard()]); }
-        catch (error) { alert(error.message); }
+        catch (error) { setFeedback('inserir-feedback', error.message, true); }
     });
 
     /* ========================================================================== 
