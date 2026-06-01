@@ -12,7 +12,13 @@ document.addEventListener('DOMContentLoaded', () => {
         alertas: [],
         fila: [],
         historicalChart: null,
-        currentHistoricalPointId: null
+        currentHistoricalPointId: null,
+        joinRequests: []
+    };
+
+    const authHeaders = () => {
+        const token = localStorage.getItem('auth_token');
+        return token ? { Authorization: `Bearer ${token}` } : {};
     };
 
     const apiFetch = async (url, options = {}) => {
@@ -20,12 +26,15 @@ document.addEventListener('DOMContentLoaded', () => {
             ...options,
             headers: {
                 'Content-Type': 'application/json',
+                ...authHeaders(),
                 ...(options.headers || {})
             }
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-            throw new Error(data.message || `Falha HTTP ${response.status}`);
+            const error = new Error(data.message || `Falha HTTP ${response.status}`);
+            error.status = response.status;
+            throw error;
         }
         return data;
     };
@@ -62,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
             sidebar.classList.add('-translate-x-full');
             sidebarOverlay.classList.add('hidden');
             if(targetId === 'pontos-dados' && map) setTimeout(() => map.invalidateSize(), 150);
-            if(targetId === 'visao-geral') loadDashboard();
+            if(targetId === 'visao-geral') { loadDashboard(); loadJoinRequests(); }
             if(targetId === 'pontos-dados') loadDataPoints();
             if(targetId === 'inserir-dados') { loadActiveDataPoints(); loadEventQueue(); }
             if(targetId === 'alertas') loadAlerts();
@@ -512,17 +521,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const closeAddModal = () => { if (addModal) { addModal.classList.add('hidden'); addModal.classList.remove('flex'); } };
 
     const fetchClusterNodes = async () => {
-        const selfResp = await fetch('/api/cluster/self');
-        if (selfResp.status === 401) { window.location.href = '/login'; return; }
-        const selfData = await selfResp.json();
-        if (!selfData.configured) {
-            openSelfModal();
-        } else {
-            closeSelfModal();
+        try {
+            const selfData = await apiFetch('/api/cluster/self');
+            if (!selfData.configured) {
+                openSelfModal();
+            } else {
+                closeSelfModal();
+            }
+            const nodesData = await apiFetch('/api/cluster/nodes');
+            state.servidores = nodesData.nodes || [];
+        } catch (error) {
+            if (error.status === 401) { window.location.href = '/login'; return; }
+            throw error;
         }
-        const nodesResp = await fetch('/api/cluster/nodes');
-        const nodesData = await nodesResp.json();
-        state.servidores = nodesData.nodes || [];
     };
 
     const renderServidores = () => {
@@ -569,16 +580,42 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn) btn.disabled = false;
     };
 
-    const loadJoinRequests = async () => {
-        const resp = await fetch('/api/cluster/join-requests?status=PENDING');
-        if (!resp.ok) return;
-        const data = await resp.json();
+    const renderJoinRequests = () => {
         const tbody = document.getElementById('tbody-join-requests');
         if (!tbody) return;
-        tbody.innerHTML = '';
-        (data.requests || []).forEach((r) => {
-            tbody.innerHTML += `<tr><td class="p-2">${r.node_name}</td><td class="p-2 font-mono">${r.tailscale_ip}</td><td class="p-2">${r.requested_role}</td><td class="p-2">${new Date(r.created_at).toLocaleString()}</td><td class="p-2 text-right"><button data-act="approve" data-id="${r.id}" class="px-2 py-1 bg-green-600 text-white rounded">Aprovar</button> <button data-act="reject" data-id="${r.id}" class="px-2 py-1 bg-red-600 text-white rounded">Rejeitar</button></td></tr>`;
-        });
+        if (!state.joinRequests.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="p-3 text-sm text-slate-500">Nenhuma solicitação pendente.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = state.joinRequests.map((request) => `
+            <tr class="hover:bg-slate-50 transition-colors">
+                <td class="p-2 font-semibold text-dark">${escapeHtml(request.node_name)}</td>
+                <td class="p-2 font-mono text-slate-600">${escapeHtml(request.tailscale_ip)}</td>
+                <td class="p-2">${escapeHtml(request.requested_role)}</td>
+                <td class="p-2">${dateLabel(request.created_at)}</td>
+                <td class="p-2 text-right whitespace-nowrap">
+                    <button data-act="approve" data-id="${request.id}" class="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded">Aprovar</button>
+                    <button data-act="reject" data-id="${request.id}" class="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded">Rejeitar</button>
+                </td>
+            </tr>`).join('');
+    };
+
+    const loadJoinRequests = async () => {
+        console.log('[join-requests] carregando pendentes...');
+        try {
+            const data = await apiFetch('/api/cluster/join-requests?status=PENDING');
+            console.log('[join-requests] resposta:', data);
+            state.joinRequests = Array.isArray(data.data)
+                ? data.data.filter((request) => request.status === 'PENDING')
+                : [];
+            renderJoinRequests();
+            setFeedback('join-requests-feedback', state.joinRequests.length ? `${state.joinRequests.length} solicitação(ões) pendente(s).` : '', false);
+        } catch (error) {
+            console.error('[join-requests] erro ao carregar:', error);
+            state.joinRequests = [];
+            renderJoinRequests();
+            setFeedback('join-requests-feedback', `Erro ao carregar solicitações: ${error.message}`, true);
+        }
     };
 
     document.getElementById('self-config-form')?.addEventListener('submit', async (e) => {
@@ -587,46 +624,70 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = { node_name: document.getElementById('self-node-name').value.trim(), tailscale_ip: document.getElementById('self-node-ip').value.trim(), public_url: document.getElementById('self-public-url').value.trim(), role: document.getElementById('self-role').value, power_score: Number(document.getElementById('self-power-score')?.value || 5) };
         if (!payload.node_name || !payload.tailscale_ip) { selfError.textContent = 'Nome e IP são obrigatórios.'; return; }
         if (!Number.isInteger(payload.power_score) || payload.power_score < 0 || payload.power_score > 10) { selfError.textContent = 'Ordem de potência deve ficar entre 0 e 10.'; return; }
-        const resp = await fetch('/api/cluster/self', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) { selfError.textContent = data.message || 'Erro ao salvar configuração.'; return; }
-        closeSelfModal(); await fetchClusterNodes(); renderServidores(); initCards();
+        try {
+            await apiFetch('/api/cluster/self', { method:'POST', body: JSON.stringify(payload)});
+            closeSelfModal(); await fetchClusterNodes(); renderServidores(); initCards();
+        } catch (error) {
+            selfError.textContent = error.message || 'Erro ao salvar configuração.';
+        }
     });
 
     document.getElementById('tbody-join-requests')?.addEventListener('click', async (e) => {
         const btn = e.target.closest('button[data-id]'); if (!btn) return;
         const id = btn.getAttribute('data-id');
         const act = btn.getAttribute('data-act');
-        await fetch(`/api/cluster/join-requests/${id}/${act}`, { method:'POST' });
-        await fetchClusterNodes(); renderServidores(); await loadJoinRequests();
+        btn.disabled = true;
+        setFeedback('join-requests-feedback', act === 'approve' ? 'Aprovando solicitação...' : 'Rejeitando solicitação...', false);
+        try {
+            await apiFetch(`/api/cluster/join-requests/${id}/${act}`, { method:'POST', body: JSON.stringify({}) });
+            await fetchClusterNodes();
+            renderServidores();
+            initCards();
+            await loadJoinRequests();
+            setFeedback('join-requests-feedback', act === 'approve' ? 'Solicitação aprovada com sucesso.' : 'Solicitação rejeitada com sucesso.', false);
+        } catch (error) {
+            console.error('[join-requests] erro ao processar:', error);
+            setFeedback('join-requests-feedback', `Erro ao processar solicitação: ${error.message}`, true);
+        } finally {
+            btn.disabled = false;
+        }
     });
+
+    document.getElementById('refresh-join-requests-btn')?.addEventListener('click', loadJoinRequests);
 
     document.getElementById('form-request-join-host')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const feedback = document.getElementById('join-host-feedback');
         feedback.textContent = '';
         const payload = { host_url: document.getElementById('join-host-url').value.trim() };
-        const resp = await fetch('/api/cluster/request-join-host', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        const data = await resp.json().catch(() => ({}));
-        feedback.textContent = resp.ok ? (data.message || 'Solicitação enviada. Aguarde aprovação no host.') : (data.message || 'Falha ao enviar solicitação.');
+        try {
+            const data = await apiFetch('/api/cluster/request-join-host', { method:'POST', body: JSON.stringify(payload)});
+            feedback.textContent = data.message || 'Solicitação enviada. Aguarde aprovação no host.';
+            feedback.className = 'text-sm mt-3 text-green-600';
+        } catch (error) {
+            feedback.textContent = error.message || 'Falha ao enviar solicitação.';
+            feedback.className = 'text-sm mt-3 text-red-600';
+        }
     });
 
     // --- Inits Globais ---
-    fetch('/api/cluster/self').then((r) => r.ok ? r.json() : null).then((d) => renderJoinSelfData(d?.node || null)).catch(() => renderJoinSelfData(null));
+    apiFetch('/api/cluster/self').then((d) => renderJoinSelfData(d?.node || null)).catch(() => renderJoinSelfData(null));
 
     initChart();
     fetchClusterNodes().finally(async () => {
         renderServidores();
         initCards();
         await loadDashboard();
+        await loadJoinRequests();
     });
     if(document.getElementById('map-container')) setTimeout(initMap, 100);
     loadActiveDataPoints();
     loadEventQueue();
     loadAlerts();
+    setInterval(loadJoinRequests, 15000);
 
     document.getElementById('refresh-health-btn')?.addEventListener('click', async () => {
-        await fetch('/api/cluster/healthcheck-all', { method: 'POST' });
+        await apiFetch('/api/cluster/healthcheck-all', { method: 'POST', body: JSON.stringify({}) });
         await fetchClusterNodes();
         renderServidores();
         initCards();
@@ -641,13 +702,15 @@ document.addEventListener('DOMContentLoaded', () => {
         err.textContent = '';
         const payload = { node_name: document.getElementById('add-node-name').value.trim(), tailscale_ip: document.getElementById('add-node-ip').value.trim(), public_url: document.getElementById('add-public-url').value.trim(), role: document.getElementById('add-role').value, status: 'UNKNOWN', power_score: Number(document.getElementById('add-power-score')?.value || 5) };
         if (!Number.isInteger(payload.power_score) || payload.power_score < 0 || payload.power_score > 10) { err.textContent = 'Ordem de potência deve ficar entre 0 e 10.'; return; }
-        const resp = await fetch('/api/cluster/nodes', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) { err.textContent = data.message || 'Erro ao adicionar servidor.'; return; }
-        closeAddModal();
-        await fetchClusterNodes();
-        renderServidores();
-        initCards();
+        try {
+            await apiFetch('/api/cluster/nodes', { method:'POST', body: JSON.stringify(payload)});
+            closeAddModal();
+            await fetchClusterNodes();
+            renderServidores();
+            initCards();
+        } catch (error) {
+            err.textContent = error.message || 'Erro ao adicionar servidor.';
+        }
     });
 
     document.getElementById('tbody-servidores')?.addEventListener('click', async (e) => {

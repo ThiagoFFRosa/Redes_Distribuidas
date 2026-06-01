@@ -194,7 +194,10 @@
                     <div class="card p-5">
                         <h4 class="font-bold text-dark text-base">Solicitações pendentes</h4>
                         <p class="text-sm text-slate-500 mt-1">Aprove ou rejeite novos servidores solicitando entrada no cluster.</p>
-                        <div id="join-requests-feedback" class="text-sm mt-3"></div>
+                        <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+                            <button id="refresh-join-requests-btn" type="button" class="px-3 py-2 text-sm border border-slate-200 rounded-lg hover:bg-slate-50">Atualizar solicitações</button>
+                            <div id="join-requests-feedback" class="text-sm"></div>
+                        </div>
                         <div class="overflow-x-auto mt-4">
                             <table class="w-full text-sm min-w-[520px]"><thead><tr class="text-slate-500"><th class="p-2 text-left">Nome</th><th class="p-2 text-left">IP</th><th class="p-2 text-left">Função</th><th class="p-2 text-left">Data</th><th class="p-2 text-right">Ações</th></tr></thead><tbody id="tbody-join-requests" class="divide-y"></tbody></table>
                         </div>
