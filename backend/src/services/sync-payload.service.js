@@ -12,6 +12,29 @@ const dateOnly = (value) => {
   return mysqlDateTime ? mysqlDateTime.slice(0, 10) : null;
 };
 const num = (value) => (value == null ? null : Number(value));
+const MAX_CHART_SYNC_POINTS = 1000;
+
+const downsampleSeries = (items, maxItems = MAX_CHART_SYNC_POINTS) => {
+  if (!Array.isArray(items) || items.length <= maxItems) return items;
+  const step = (items.length - 1) / (maxItems - 1);
+  return Array.from({ length: maxItems }, (_value, index) => items[Math.round(index * step)]);
+};
+
+const reduceChartPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') return payload;
+  const labels = Array.isArray(payload.labels) ? payload.labels : [];
+  const values = Array.isArray(payload.values) ? payload.values : [];
+  const maxLength = Math.max(labels.length, values.length);
+  if (maxLength <= MAX_CHART_SYNC_POINTS) return payload;
+  return {
+    ...payload,
+    labels: downsampleSeries(labels),
+    values: downsampleSeries(values),
+    downsampled: true,
+    full_count: payload.full_count || maxLength,
+    sync_limited_to: MAX_CHART_SYNC_POINTS
+  };
+};
 
 const dataPointPayload = (row) => row && ({
   uuid: row.uuid, name: row.name, type: row.type, latitude: num(row.latitude), longitude: num(row.longitude),
@@ -94,7 +117,7 @@ const getChartCachePayloadById = async (id, connection = pool) => {
   return row && {
     uuid: row.uuid, data_point_uuid: row.data_point_uuid, chart_type: row.chart_type, status: row.status,
     generated_by_node_name: row.generated_by_node_name, total_points: Number(row.total_points || 0),
-    date_start: dateOnly(row.date_start), date_end: dateOnly(row.date_end), payload: parseJson(row.payload), summary: parseJson(row.summary),
+    date_start: dateOnly(row.date_start), date_end: dateOnly(row.date_end), payload: reduceChartPayload(parseJson(row.payload)), summary: parseJson(row.summary),
     error_message: row.error_message, generated_at: dateValue(row.generated_at), created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)
   };
 };

@@ -202,10 +202,11 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
 });
 
 const applySyncEvents = async (events = []) => {
+  const safeEvents = Array.isArray(events) ? events : [];
   const connection = await pool.getConnection();
-  const summary = { ok: true, applied: 0, skipped: 0, failed: 0, errors: [] };
+  const summary = { ok: true, received: safeEvents.length, applied: 0, skipped: 0, failed: 0, errors: [] };
   try {
-    for (const event of events) {
+    for (const event of safeEvents) {
       try {
         await connection.beginTransaction();
         const result = await applySyncEvent(event, connection);
@@ -215,7 +216,7 @@ const applySyncEvents = async (events = []) => {
       } catch (error) {
         await connection.rollback().catch(() => {});
         summary.failed += 1;
-        summary.errors.push({ event_uuid: event?.event_uuid || null, message: error.message });
+        summary.errors.push({ event_uuid: event?.event_uuid || null, entity_type: event?.entity_type || null, entity_key: event?.entity_key || null, message: error.message });
         console.error('[sync] falha ao aplicar evento:', error.message);
       }
     }

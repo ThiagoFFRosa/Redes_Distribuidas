@@ -24,7 +24,14 @@ router.get('/events', requireClusterSecret, async (req, res, next) => {
 });
 
 router.post('/apply', requireClusterSecret, async (req, res, next) => {
-  try { res.json(await applyService.applySyncEvents(req.body?.events || [])); } catch (error) { next(error); }
+  try {
+    const events = req.body?.events;
+    if (!Array.isArray(events)) return res.status(400).json({ ok: false, error: 'events precisa ser array.' });
+    if (events.length > env.syncBatchSize) {
+      return res.status(413).json({ ok: false, error: 'Lote de eventos muito grande.', limit: env.syncBatchSize });
+    }
+    return res.json(await applyService.applySyncEvents(events));
+  } catch (error) { return next(error); }
 });
 
 router.post('/pull-from-node', requireClusterSecret, async (req, res, next) => {

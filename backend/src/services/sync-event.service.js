@@ -17,6 +17,8 @@ const normalizePayload = (value) => {
 const hashPayload = (payload) => crypto.createHash('sha256').update(JSON.stringify(normalizePayload(payload ?? {}))).digest('hex');
 const newUuid = () => crypto.randomUUID();
 const toJson = (payload) => JSON.stringify(payload ?? {});
+const payloadSizeBytes = (payload) => Buffer.byteLength(toJson(payload), 'utf8');
+const formatKb = (bytes) => `${(bytes / 1024).toFixed(bytes >= 10240 ? 0 : 1)}KB`;
 
 const getSelfIdentity = async (connection = pool) => {
   const [rows] = await connection.execute('SELECT * FROM cluster_nodes WHERE is_self = 1 LIMIT 1');
@@ -36,6 +38,9 @@ const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', pa
   const eventUuid = newUuid();
   const createdAt = nowMysql();
   const payloadHash = hashPayload(payload);
+  const sizeBytes = payloadSizeBytes(payload);
+  const logPrefix = sizeBytes > 100 * 1024 ? '[sync-event] aviso: payload grande' : '[sync-event] criado';
+  console.log(`${logPrefix} entity=${entityType} key=${String(entityKey)} size=${formatKb(sizeBytes)}`);
   await connection.execute(
     `INSERT INTO sync_events (event_uuid, source_node_uuid, entity_type, entity_key, operation, payload, payload_hash, version, created_at, applied_locally_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
