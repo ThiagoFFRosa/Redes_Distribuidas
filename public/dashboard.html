@@ -239,7 +239,7 @@
                                     <th class="p-4 font-medium">IP (Tailscale)</th>
                                     <th class="p-4 font-medium">Função</th>
                                     <th class="p-4 font-medium">Status</th>
-                                    <th class="p-4 font-medium">Limites</th>
+                                    <th class="p-4 font-medium">Potência</th>
                                     <th class="p-4 font-medium text-right">Ações</th>
                                 </tr>
                             </thead>
@@ -413,13 +413,23 @@
                         </form>
                         <div id="inserir-feedback" class="text-sm mt-4"></div>
                         <div class="mt-6 border border-dashed border-slate-300 rounded-xl p-4 bg-slate-50">
-                            <h4 class="font-bold text-dark flex items-center gap-2"><i data-lucide="file-spreadsheet" class="w-4 h-4 text-primary"></i> Importar medições por planilha</h4>
-                            <p class="text-sm text-slate-500 mt-2">Importação em lote via XLSX/CSV será adicionada em uma próxima etapa.</p>
-                            <div class="flex flex-col sm:flex-row gap-3 mt-4">
-                                <button type="button" class="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 font-medium cursor-not-allowed" disabled>Selecionar arquivo XLSX/CSV</button>
-                                <button type="button" class="px-4 py-2 rounded-lg bg-slate-200 text-slate-500 font-medium cursor-not-allowed" disabled>Importar dados</button>
-                            </div>
-                            <p class="text-xs text-slate-500 mt-3">Em breve: pré-visualização, validação e importação em lote.</p>
+                            <h4 class="font-bold text-dark flex items-center gap-2"><i data-lucide="file-spreadsheet" class="w-4 h-4 text-primary"></i> Importar histórico de sensor</h4>
+                            <p class="text-sm text-slate-500 mt-2">Use arquivos CSV com colunas <code>datetime,Cota,max,min</code>. A cota em cm será convertida para metros.</p>
+                            <form id="form-import-historical" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                                <input id="hist-file" name="file" type="file" accept=".csv" class="sm:col-span-2 border border-slate-300 rounded-lg px-3 py-2 bg-white text-sm" required>
+                                <select id="hist-data-point" name="data_point_id" class="border border-slate-300 rounded-lg px-3 py-2 bg-white text-sm"><option value="">Criar ponto automaticamente</option></select>
+                                <input id="hist-sensor-name" name="sensor_name" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Nome do sensor/ponto (opcional)">
+                                <input id="hist-city-region" name="city_region" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Cidade/região (opcional)">
+                                <input id="hist-latitude" name="latitude" type="number" step="0.0000001" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Latitude (opcional)">
+                                <input id="hist-longitude" name="longitude" type="number" step="0.0000001" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Longitude (opcional)">
+                                <input id="hist-warning-level" name="warning_level" type="number" step="0.001" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Nível de risco (m)">
+                                <input id="hist-critical-level" name="critical_level" type="number" step="0.001" class="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Nível crítico (m)">
+                                <div class="sm:col-span-2 flex flex-col sm:flex-row gap-3">
+                                    <button type="submit" id="hist-import-btn" class="px-4 py-2 rounded-lg bg-primary text-white font-medium">Importar CSV</button>
+                                    <button type="button" class="px-4 py-2 rounded-lg bg-slate-200 text-slate-500 font-medium cursor-not-allowed" disabled>XLSX em breve</button>
+                                </div>
+                            </form>
+                            <div id="hist-import-feedback" class="text-sm mt-3"></div>
                         </div>
                     </div>
 
@@ -543,6 +553,17 @@
     <!-- Scripts (Graficos e Funcionalidade) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+<div id="historical-modal" class="fixed inset-0 bg-slate-950/60 z-50 hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto p-6">
+    <div class="flex justify-between items-start gap-4 mb-4"><div><h3 id="historical-title" class="text-xl font-bold text-dark">Histórico do ponto</h3><p id="historical-message" class="text-sm text-slate-500"></p></div><button id="close-historical-modal" class="text-slate-400 hover:text-slate-700"><i data-lucide="x" class="w-5 h-5"></i></button></div>
+    <div id="historical-summary" class="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-sm mb-4"></div>
+    <div class="h-[360px] border border-slate-100 rounded-xl p-3"><canvas id="historical-chart"></canvas></div>
+    <div id="historical-job" class="text-sm text-slate-600 mt-4"></div>
+    <button id="regenerate-historical-chart" class="mt-4 px-4 py-2 rounded-lg bg-primary text-white font-medium">Atualizar gráfico</button>
+  </div>
+</div>
+
     <script src="/assets/js/app.js"></script>
 
 <div id="self-config-modal" class="fixed inset-0 bg-slate-950/60 z-50 hidden items-center justify-center p-4">
@@ -553,6 +574,7 @@
       <input id="self-node-name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome do servidor" required />
       <input id="self-node-ip" class="w-full border rounded-lg px-3 py-2" placeholder="IP Tailscale deste servidor" required />
       <input id="self-public-url" class="w-full border rounded-lg px-3 py-2" placeholder="URL pública/ngrok (opcional)" />
+      <label class="text-sm text-slate-600">Ordem de potência</label><input id="self-power-score" type="number" min="0" max="10" value="5" class="w-full border rounded-lg px-3 py-2" /><p class="text-xs text-slate-500">Usado para escolher qual servidor processará tarefas pesadas quando houver rede distribuída.</p>
       <select id="self-role" class="w-full border rounded-lg px-3 py-2"><option value="HOST">HOST</option><option value="STANDBY">STANDBY</option><option value="UNKNOWN" selected>UNKNOWN</option></select>
       <div id="self-config-error" class="text-sm text-red-600"></div>
       <button type="submit" class="w-full bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg">Salvar configuração</button>
@@ -568,6 +590,7 @@
       <input id="add-node-name" class="w-full border rounded-lg px-3 py-2" placeholder="Nome do servidor" required />
       <input id="add-node-ip" class="w-full border rounded-lg px-3 py-2" placeholder="IP Tailscale" required />
       <input id="add-public-url" class="w-full border rounded-lg px-3 py-2" placeholder="URL pública/ngrok (opcional)" />
+      <label class="text-sm text-slate-600">Ordem de potência</label><input id="add-power-score" type="number" min="0" max="10" value="5" class="w-full border rounded-lg px-3 py-2" /><p class="text-xs text-slate-500">Usado para escolher qual servidor processará tarefas pesadas quando houver rede distribuída.</p>
       <select id="add-role" class="w-full border rounded-lg px-3 py-2"><option value="HOST">HOST</option><option value="STANDBY">STANDBY</option><option value="UNKNOWN" selected>UNKNOWN</option></select>
       <div id="add-server-error" class="text-sm text-red-600"></div>
       <div class="flex gap-2"><button type="button" id="close-add-server-modal" class="w-1/2 border px-4 py-2 rounded-lg">Cancelar</button><button type="submit" class="w-1/2 bg-primary text-white px-4 py-2 rounded-lg">Salvar</button></div>

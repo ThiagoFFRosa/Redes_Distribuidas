@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const mapEl = document.getElementById('public-monitoring-map');
   if (!mapEl || typeof L === 'undefined') return;
 
-  const state = { points: [], selectedPoint: null, chart: null, map: null, markers: [] };
+  const state = { points: [], selectedPoint: null, chart: null, map: null, markers: [], showingHistorical: false };
   const colors = { NORMAL: '#16a34a', ATTENTION: '#f59e0b', CRITICAL: '#dc2626', INACTIVE: '#64748b', UNKNOWN: '#93c5fd' };
   const labels = { NORMAL: 'Normal', ATTENTION: 'Atenção', CRITICAL: 'Crítico', INACTIVE: 'Inativo', UNKNOWN: 'Sem dados' };
   const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -73,12 +73,26 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Atualizado em</span><strong>${formatDate(point.latest_measurement?.measured_at)}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Limites</span><strong>Risco: ${formatLevel(point.warning_level, point.measurement_unit)} · Crítico: ${formatLevel(point.critical_level, point.measurement_unit)}</strong></div>
           </div>
+        <button id="public-historical-btn" type="button" class="mt-4 px-4 py-2 rounded-lg bg-primary text-white font-semibold">Ver histórico completo</button>
         </div>
         <div class="lg:w-2/3 min-h-[280px]">
           <div id="public-point-chart-empty" class="hidden h-full rounded-xl bg-slate-50 border border-dashed border-slate-200 flex items-center justify-center p-6 text-slate-500 text-center">Ainda não há medições registradas para este ponto.</div>
           <canvas id="public-point-chart" height="140"></canvas>
         </div>
       </div>`;
+  };
+
+  const loadHistoricalChart = async (point) => {
+    const response = await fetch(`/api/public/monitoring-points/${point.id}/historical-chart`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.message || 'Falha ao carregar histórico.');
+    const empty = document.getElementById('public-point-chart-empty');
+    const canvas = document.getElementById('public-point-chart');
+    if (state.chart) state.chart.destroy();
+    const chartPayload = payload.chart?.payload;
+    if (!chartPayload?.labels?.length) { empty.textContent = payload.message || 'Gráfico histórico ainda está sendo gerado.'; empty?.classList.remove('hidden'); canvas?.classList.add('hidden'); return; }
+    empty?.classList.add('hidden'); canvas?.classList.remove('hidden');
+    state.chart = new Chart(canvas, { type: 'line', data: { labels: chartPayload.labels, datasets: [{ label: `Histórico (${chartPayload.unit || 'm'})`, data: chartPayload.values, borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,0.10)', fill: true, tension: 0.2, pointRadius: 0 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true }, subtitle: { display: Boolean(payload.message), text: payload.message || '' } }, scales: { y: { title: { display: true, text: chartPayload.unit || 'm' } } } } });
   };
 
   const loadMeasurements = async (point) => {
@@ -108,7 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const selectPoint = async (point) => {
     state.selectedPoint = point;
-    try { await loadMeasurements(point); } catch (error) {
+    try { await loadMeasurements(point); document.getElementById('public-historical-btn')?.addEventListener('click', async () => { try { await loadHistoricalChart(point); } catch (error) { const card = document.getElementById('public-point-details'); if (card) card.innerHTML += `<p class="text-sm text-red-600 mt-3">${escapeHtml(error.message)}</p>`; } }); } catch (error) {
       const card = document.getElementById('public-point-details');
       if (card) card.innerHTML += `<p class="text-sm text-red-600 mt-3">${escapeHtml(error.message)}</p>`;
     }

@@ -20,6 +20,11 @@ const alertRoutes = require('./routes/alert.routes');
 const eventQueueRoutes = require('./routes/event-queue.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
 const publicMonitoringRoutes = require('./routes/public-monitoring.routes');
+const importRoutes = require('./routes/import.routes');
+const syncRoutes = require('./routes/sync.routes');
+const processingRoutes = require('./routes/processing.routes');
+const chartWorker = require('./services/chart-worker.service');
+const syncOutboxWorker = require('./services/sync-outbox-worker.service');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -56,11 +61,16 @@ app.use('/api/alerts', alertRoutes);
 app.use('/api/event-queue', eventQueueRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/public', publicMonitoringRoutes);
+app.use('/api/imports', importRoutes);
+app.use('/api/sync', syncRoutes);
+app.use('/api/processing', processingRoutes);
 app.use((error, req, res, _next) => { console.error('[server] erro não tratado:', error); res.status(500).json({ message: 'Erro interno do servidor.' }); });
 
 const start = async () => {
   await clusterStartupService.initialize();
   heartbeatService.start();
+  chartWorker.start();
+  syncOutboxWorker.start();
   app.listen(env.port, async () => {
     console.log(`Custom NewTab API running on http://localhost:${env.port}`);
     const selfNode = await repo.getSelfNode();

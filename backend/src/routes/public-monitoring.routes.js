@@ -1,6 +1,7 @@
 const express = require('express');
 const dataPointRepository = require('../repositories/data-point.repository');
 const measurementRepository = require('../repositories/measurement.repository');
+const historicalChartService = require('../services/historical-chart.service');
 
 const router = express.Router();
 
@@ -25,6 +26,15 @@ router.get('/monitoring-points', async (_req, res, next) => {
   try {
     const points = await dataPointRepository.findAllWithLatestMeasurement();
     res.json({ ok: true, data: points.map(withRiskStatus) });
+  } catch (error) { next(error); }
+});
+
+
+router.get('/monitoring-points/:id/historical-chart', async (req, res, next) => {
+  try {
+    const result = await historicalChartService.getHistoricalChart(req.params.id);
+    if (!result) return res.status(404).json({ ok: false, message: 'Ponto não encontrado.' });
+    res.json(result);
   } catch (error) { next(error); }
 });
 

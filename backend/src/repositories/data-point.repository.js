@@ -4,8 +4,8 @@ const toNullableNumber = (value) => (value == null ? null : Number(value));
 
 const toApi = (row) => row && ({
   ...row,
-  latitude: Number(row.latitude),
-  longitude: Number(row.longitude),
+  latitude: row.latitude == null ? null : Number(row.latitude),
+  longitude: row.longitude == null ? null : Number(row.longitude),
   normal_level: toNullableNumber(row.normal_level),
   warning_level: toNullableNumber(row.warning_level),
   critical_level: toNullableNumber(row.critical_level),
