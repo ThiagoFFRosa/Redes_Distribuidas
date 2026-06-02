@@ -119,6 +119,7 @@ const backfillExistingSyncEvents = async () => {
     ['alert', 'alerts', 'uuid', payloadService.getAlertPayloadById],
     ['historical_import', 'historical_imports', 'uuid', payloadService.getHistoricalImportPayloadById],
     ['historical_measurement', 'historical_measurements', 'uuid', payloadService.getHistoricalMeasurementPayloadById],
+    ['chart_generation_job', 'chart_generation_jobs', 'uuid', payloadService.getChartGenerationJobPayloadById],
     ['chart_cache', 'chart_cache', 'uuid', payloadService.getChartCachePayloadById]
   ];
   let created = 0;

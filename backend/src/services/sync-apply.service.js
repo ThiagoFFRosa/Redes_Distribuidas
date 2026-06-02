@@ -167,6 +167,43 @@ const upsertHistoricalMeasurement = async (event, c) => {
   );
 };
 
+
+const upsertChartGenerationJob = async (event, c) => {
+  const p = event.payload || {};
+  const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
+  if (!p.uuid) throw new Error('chart_generation_job sem uuid');
+  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
+  const requestedRows = p.requested_by_node_uuid
+    ? await c.execute('SELECT id FROM cluster_nodes WHERE node_uuid=? LIMIT 1', [p.requested_by_node_uuid])
+    : [[]];
+  const assignedRows = p.assigned_to_node_uuid
+    ? await c.execute('SELECT id, node_name FROM cluster_nodes WHERE node_uuid=? LIMIT 1', [p.assigned_to_node_uuid])
+    : [[]];
+  const requestedNode = requestedRows[0][0] || null;
+  const assignedNode = assignedRows[0][0] || null;
+  if ((p.requested_by_node_uuid && !requestedNode) || (p.assigned_to_node_uuid && !assignedNode)) {
+    return { status: 'deferred', reason: 'missing_cluster_node' };
+  }
+  if (await shouldSkipOlder(c, 'chart_generation_jobs', p.uuid, eventTime(event))) return 'skipped_older';
+  await c.execute(
+    `INSERT INTO chart_generation_jobs
+      (uuid, data_point_id, chart_type, data_point_uuid, status, requested_by_node_id, requested_by_node_uuid,
+       assigned_node_id, assigned_to_node_uuid, assigned_node_name, progress_percent, estimated_seconds,
+       error_message, started_at, finished_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, NOW()), COALESCE(?, NOW()))
+     ON DUPLICATE KEY UPDATE data_point_id=VALUES(data_point_id), chart_type=VALUES(chart_type), data_point_uuid=VALUES(data_point_uuid),
+       status=VALUES(status), requested_by_node_id=VALUES(requested_by_node_id), requested_by_node_uuid=VALUES(requested_by_node_uuid),
+       assigned_node_id=VALUES(assigned_node_id), assigned_to_node_uuid=VALUES(assigned_to_node_uuid), assigned_node_name=VALUES(assigned_node_name),
+       progress_percent=VALUES(progress_percent), estimated_seconds=VALUES(estimated_seconds), error_message=VALUES(error_message),
+       started_at=VALUES(started_at), finished_at=VALUES(finished_at), updated_at=VALUES(updated_at)`,
+    [p.uuid, dataPointId, p.chart_type || 'HISTORICAL_RIVER_LEVEL', p.data_point_uuid, p.status || 'PENDING',
+      requestedNode?.id || null, p.requested_by_node_uuid || null, assignedNode?.id || null, p.assigned_to_node_uuid || null,
+      p.assigned_to_node_name || assignedNode?.node_name || null, Number(p.progress_percent || 0), p.estimated_seconds ?? null,
+      p.error_message || null, asDate(p.started_at), asDate(p.finished_at), asDate(p.created_at), asDate(p.updated_at)]
+  );
+  return 'applied';
+};
+
 const upsertChartCache = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
@@ -174,10 +211,14 @@ const upsertChartCache = async (event, c) => {
   if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
   if (await shouldSkipOlder(c, 'chart_cache', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
-    `INSERT INTO chart_cache (uuid, data_point_id, chart_type, status, generated_by_node_name, total_points, date_start, date_end, payload, summary, error_message, generated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE data_point_id=VALUES(data_point_id), chart_type=VALUES(chart_type), status=VALUES(status), generated_by_node_name=VALUES(generated_by_node_name), total_points=VALUES(total_points), date_start=VALUES(date_start), date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), error_message=VALUES(error_message), generated_at=VALUES(generated_at)`,
-    [p.uuid, dataPointId, p.chart_type || 'HISTORICAL_RIVER_LEVEL', p.status || 'READY', p.generated_by_node_name || null, p.total_points || 0, p.date_start || null, p.date_end || null, json(p.payload), json(p.summary), p.error_message || null, asDate(p.generated_at)]
+    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid, generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, error_message, generated_at)
+     VALUES (?, ?, ?, ?, ?, (SELECT id FROM cluster_nodes WHERE node_uuid=? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), data_point_id=VALUES(data_point_id), data_point_uuid=VALUES(data_point_uuid), chart_type=VALUES(chart_type), status=VALUES(status),
+       generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid), generated_by_node_name=VALUES(generated_by_node_name),
+       source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start), date_end=VALUES(date_end), payload=VALUES(payload),
+       summary=VALUES(summary), error_message=VALUES(error_message), generated_at=VALUES(generated_at)`,
+    [p.uuid, dataPointId, p.data_point_uuid, p.chart_type || 'HISTORICAL_RIVER_LEVEL', p.status || 'READY', p.generated_by_node_uuid || null, p.generated_by_node_uuid || null,
+      p.generated_by_node_name || null, p.source_job_uuid || null, p.total_points || 0, p.date_start || null, p.date_end || null, json(p.payload), json(p.summary), p.error_message || null, asDate(p.generated_at)]
   );
   return 'applied';
 };
@@ -189,16 +230,17 @@ const handlers = {
   alert: upsertAlert,
   historical_import: upsertHistoricalImport,
   historical_measurement: upsertHistoricalMeasurement,
+  chart_generation_job: upsertChartGenerationJob,
   chart_cache: upsertChartCache
 };
 
 const resultStatusFor = (result) => {
+  if (result === 'applied' || result?.status === 'applied') return 'APPLIED';
+  if (result === 'skipped_older' || (result?.status === 'skipped' && result.reason === 'older_than_local')) return 'SKIPPED_OLDER_VERSION';
   if (result?.status === 'deferred') return 'DEFERRED_MISSING_DEPENDENCY';
-  if (result.status === 'applied') return 'APPLIED';
-  if (result.status === 'skipped' && result.reason === 'duplicate') return 'SKIPPED_ALREADY_APPLIED';
-  if (result.status === 'skipped' && result.reason === 'older_than_local') return 'SKIPPED_OLDER_VERSION';
-  if (result.status === 'skipped') return 'FAILED';
-  return 'UNKNOWN';
+  if (result?.status === 'skipped' && result.reason === 'duplicate') return 'SKIPPED_ALREADY_APPLIED';
+  if (result?.status === 'skipped') return 'FAILED';
+  return 'APPLIED';
 };
 
 const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(async () => {
@@ -219,7 +261,7 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
 });
 
 const applySyncEvents = async (events = []) => {
-  const order = ['cluster_node', 'data_point', 'historical_import', 'measurement', 'historical_measurement', 'alert', 'chart_cache'];
+  const order = ['cluster_node', 'data_point', 'historical_import', 'measurement', 'historical_measurement', 'alert', 'chart_generation_job', 'chart_cache'];
   const safeEvents = (Array.isArray(events) ? events : []).slice().sort((a, b) => {
     const ai = order.indexOf(a?.entity_type);
     const bi = order.indexOf(b?.entity_type);
@@ -242,7 +284,7 @@ const applySyncEvents = async (events = []) => {
           entity_type: event?.entity_type || null,
           entity_key: event?.entity_key || event?.payload?.uuid || event?.payload?.node_uuid || null,
           status,
-          reason: result.reason || null
+          reason: result?.reason || null
         });
       } catch (error) {
         await connection.rollback().catch(() => {});

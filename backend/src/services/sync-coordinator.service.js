@@ -327,7 +327,7 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
 };
 
 
-const BOOTSTRAP_ENTITIES = ['cluster_nodes', 'data_points', 'historical_imports', 'measurements', 'historical_measurements', 'alerts', 'chart_cache'];
+const BOOTSTRAP_ENTITIES = ['cluster_nodes', 'data_points', 'historical_imports', 'measurements', 'historical_measurements', 'alerts', 'chart_generation_jobs', 'chart_cache'];
 const entityTypeForTable = {
   cluster_nodes: 'cluster_node',
   data_points: 'data_point',
@@ -335,6 +335,7 @@ const entityTypeForTable = {
   alerts: 'alert',
   historical_imports: 'historical_import',
   historical_measurements: 'historical_measurement',
+  chart_generation_jobs: 'chart_generation_job',
   chart_cache: 'chart_cache'
 };
 const payloadGetterForTable = {
@@ -344,6 +345,7 @@ const payloadGetterForTable = {
   alerts: payloadService.getAlertPayloadById,
   historical_imports: payloadService.getHistoricalImportPayloadById,
   historical_measurements: payloadService.getHistoricalMeasurementPayloadById,
+  chart_generation_jobs: payloadService.getChartGenerationJobPayloadById,
   chart_cache: payloadService.getChartCachePayloadById
 };
 
