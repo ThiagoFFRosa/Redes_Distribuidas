@@ -34,6 +34,11 @@ const getSelfBaseUrls = (self) => {
   return [...urls];
 };
 
+const getSyncTargetUrl = (node) => {
+  const baseUrl = getNodeBaseUrl(node);
+  return baseUrl ? `${baseUrl}/api/sync/apply` : null;
+};
+
 const getNodeSyncTarget = (node) => {
   const baseUrl = getNodeBaseUrl(node);
   return baseUrl ? `${baseUrl}/api/sync/apply` : null;
@@ -51,4 +56,4 @@ const resolveNodeBaseUrl = (node, self = null) => {
   return { baseUrl, targetUrl: baseUrl ? `${baseUrl}/api/sync/apply` : null, matchedSelfUrl };
 };
 
-module.exports = { normalizeUrl, getNodeBaseUrl, getSelfBaseUrls, getNodeSyncTarget, resolveNodeBaseUrl, getTailscaleBaseUrl };
+module.exports = { normalizeUrl, getNodeBaseUrl, getSyncTargetUrl, getSelfBaseUrls, getNodeSyncTarget, resolveNodeBaseUrl, getTailscaleBaseUrl };

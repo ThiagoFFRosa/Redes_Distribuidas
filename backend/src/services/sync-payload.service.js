@@ -53,7 +53,8 @@ const clusterNodePayload = (row) => row && ({
   role: row.role,
   is_self: 0,
   metadata: parseJson(row.metadata) ?? {},
-  power_score: Number(row.power_score ?? 5)
+  power_score: Number(row.power_score ?? 5),
+  structural_version: Number(row.structural_version ?? 1)
 });
 
 const getDataPointPayloadById = async (id, connection = pool) => {

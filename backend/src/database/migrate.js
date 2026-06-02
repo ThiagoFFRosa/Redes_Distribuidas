@@ -10,7 +10,8 @@ const migrations = [
   require('./migrations/007_add_thresholds_to_data_points'),
   require('./migrations/008_historical_imports_processing_sync'),
   require('./migrations/009_event_sync_foundation'),
-  require('./migrations/010_cluster_node_sync_fields')
+  require('./migrations/010_cluster_node_sync_fields'),
+  require('./migrations/011_bootstrap_runs')
 ];
 
 const ensureMigrationsTable = async (connection) => {

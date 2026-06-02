@@ -2,19 +2,31 @@ const crypto = require('crypto');
 const pool = require('../database/connection');
 const { shouldSkipSyncEvent } = require('./sync-context.service');
 const { nowMysql } = require('../utils/mysql-date');
+const env = require('../config/env');
+const logger = require('../utils/logger');
 
-const normalizePayload = (value) => {
-  if (Array.isArray(value)) return value.map(normalizePayload);
-  if (value && typeof value === 'object') {
-    return Object.keys(value).sort().reduce((acc, key) => {
-      acc[key] = normalizePayload(value[key]);
-      return acc;
-    }, {});
+const normalizeNumberField = (key, value) => {
+  if ((key === 'power_score' || key === 'port') && value !== null && value !== undefined && value !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
   return value;
 };
 
-const hashPayload = (payload) => crypto.createHash('sha256').update(JSON.stringify(normalizePayload(payload ?? {}))).digest('hex');
+const canonicalizePayload = (value, key = null) => {
+  if (value === undefined) return null;
+  const normalized = normalizeNumberField(key, value);
+  if (Array.isArray(normalized)) return normalized.map((item) => canonicalizePayload(item));
+  if (normalized && typeof normalized === 'object') {
+    return Object.keys(normalized).sort().reduce((acc, childKey) => {
+      acc[childKey] = canonicalizePayload(normalized[childKey], childKey);
+      return acc;
+    }, {});
+  }
+  return normalized;
+};
+
+const hashPayload = (payload) => crypto.createHash('sha256').update(JSON.stringify(canonicalizePayload(payload ?? {}))).digest('hex');
 const newUuid = () => crypto.randomUUID();
 const toJson = (payload) => JSON.stringify(payload ?? {});
 const payloadSizeBytes = (payload) => Buffer.byteLength(toJson(payload), 'utf8');
@@ -27,13 +39,15 @@ const getSelfIdentity = async (connection = pool) => {
 
 const CLUSTER_NODE_SKIP_REASONS = new Set(['healthcheck', 'heartbeat', 'remote-sync', 'bootstrap', 'startup-health']);
 
+const dedupeWindowSeconds = () => Math.max(1, Math.ceil(Number(env.syncDedupeWindowMs || 2000) / 1000));
+
 const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', payload }, connection = pool, options = {}) => {
   if (!entityType || !entityKey) return null;
   const reason = options.reason || 'unspecified';
   if (entityType === 'cluster_node') {
-    console.log(`[sync-event] tentativa cluster_node key=${String(entityKey)} reason=${reason}`);
+    logger.debug(`[sync-event] tentativa cluster_node key=${String(entityKey)} reason=${reason}`);
     if (CLUSTER_NODE_SKIP_REASONS.has(reason)) {
-      console.log(`[sync-event] cluster_node ignorado reason=${reason}`);
+      logger.debug(`[sync-event] cluster_node ignorado reason=${reason}`);
       return null;
     }
   }
@@ -41,30 +55,32 @@ const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', pa
 
   const self = await getSelfIdentity(connection);
   if (!self?.node_uuid) {
-    console.warn('[sync] self node_uuid não configurado; evento não criado.');
+    logger.warn('[sync] self node_uuid não configurado; evento não criado.');
     return null;
   }
 
   const eventUuid = newUuid();
   const createdAt = nowMysql();
   const payloadHash = hashPayload(payload);
+  const windowSeconds = dedupeWindowSeconds();
   const [[duplicate]] = await connection.execute(
     `SELECT id FROM sync_events
       WHERE entity_type = ? AND entity_key = ? AND operation = ? AND payload_hash = ?
+        AND created_at >= DATE_SUB(NOW(), INTERVAL ${windowSeconds} SECOND)
       LIMIT 1`,
     [entityType, String(entityKey), operation, payloadHash]
   );
-  if (duplicate) {
-    if (entityType === 'cluster_node') console.debug(`[sync-event] duplicado ignorado entity=cluster_node key=${String(entityKey)}`);
-    return null;
-  }
+  logger.debug(`[sync-event] payload_hash=${payloadHash}`);
+  logger.debug(`[sync-event] dedupe_window_hit=${Boolean(duplicate)}`);
+  if (duplicate) return null;
+
   const sizeBytes = payloadSizeBytes(payload);
   const logPrefix = sizeBytes > 100 * 1024 ? '[sync-event] aviso: payload grande' : '[sync-event] criado';
-  console.log(`${logPrefix} entity=${entityType} key=${String(entityKey)} size=${formatKb(sizeBytes)}`);
+  logger.info(`${logPrefix} entity=${entityType} key=${String(entityKey)} size=${formatKb(sizeBytes)}`);
   await connection.execute(
     `INSERT INTO sync_events (event_uuid, source_node_uuid, entity_type, entity_key, operation, payload, payload_hash, version, created_at, applied_locally_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-    [eventUuid, self.node_uuid, entityType, String(entityKey), operation, toJson(payload), payloadHash, createdAt, createdAt]
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [eventUuid, self.node_uuid, entityType, String(entityKey), operation, toJson(payload), payloadHash, Number(payload?.structural_version || 1), createdAt, createdAt]
   );
   await connection.execute(
     `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, entity_type, entity_key, payload_hash, applied_at)
@@ -92,7 +108,6 @@ const createEntitySyncEvent = async (entityType, payload, operation = 'UPSERT', 
   createSyncEvent({ entityType, entityKey: payload?.uuid || payload?.node_uuid || payload?.entity_key, operation, payload }, connection, options)
 );
 
-
 const backfillExistingSyncEvents = async () => {
   const self = await getSelfIdentity(pool);
   if (!self?.node_uuid) return { ok: true, skipped: true };
@@ -107,18 +122,18 @@ const backfillExistingSyncEvents = async () => {
     ['chart_cache', 'chart_cache', 'uuid', payloadService.getChartCachePayloadById]
   ];
   let created = 0;
-  for (const [entityType, tableName, keyColumn, payloadBuilder] of entities) {
-    const [rows] = await pool.execute(`SELECT id, ${keyColumn} AS entity_key FROM ${tableName} ORDER BY id ASC`);
+  for (const [entityType, tableName, keyColumn, getPayload] of entities) {
+    const [rows] = await pool.execute(`SELECT id, ${keyColumn} AS entity_key FROM ${tableName} WHERE ${keyColumn} IS NOT NULL`);
     for (const row of rows) {
-      const [[existing]] = await pool.execute('SELECT id FROM sync_events WHERE entity_type=? AND entity_key=? LIMIT 1', [entityType, row.entity_key]);
-      if (existing) continue;
-      const payload = await payloadBuilder(row.id);
+      const [[exists]] = await pool.execute('SELECT id FROM sync_events WHERE entity_type=? AND entity_key=? LIMIT 1', [entityType, row.entity_key]);
+      if (exists) continue;
+      const payload = await getPayload(row.id, pool);
       if (!payload) continue;
-      await createSyncEvent({ entityType, entityKey: row.entity_key, operation: 'UPSERT', payload });
-      created += 1;
+      const event = await createEntitySyncEvent(entityType, payload, 'UPSERT', pool, { reason: 'backfill' });
+      if (event) created += 1;
     }
   }
   return { ok: true, created };
 };
 
-module.exports = { createSyncEvent, createEntitySyncEvent, hashPayload, normalizePayload, getSelfIdentity, newUuid, backfillExistingSyncEvents };
+module.exports = { createSyncEvent, createEntitySyncEvent, backfillExistingSyncEvents, hashPayload, canonicalizePayload };

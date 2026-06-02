@@ -48,5 +48,6 @@ module.exports = {
   publicUrlCheckTimeoutMs: parseNumber(process.env.PUBLIC_URL_CHECK_TIMEOUT_MS, 3000),
   syncBatchSize: parsePositiveInteger(process.env.SYNC_BATCH_SIZE, 100),
   syncMaxPayloadBytes: parsePositiveInteger(process.env.SYNC_MAX_PAYLOAD_BYTES, 512000),
-  syncMaxBatchesPerCycle: parsePositiveInteger(process.env.SYNC_MAX_BATCHES_PER_CYCLE, 5)
+  syncMaxBatchesPerCycle: parsePositiveInteger(process.env.SYNC_MAX_BATCHES_PER_CYCLE, 5),
+  syncDedupeWindowMs: parsePositiveInteger(process.env.SYNC_DEDUPE_WINDOW_MS, 2000)
 };

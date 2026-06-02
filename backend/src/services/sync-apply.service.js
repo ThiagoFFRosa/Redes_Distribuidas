@@ -66,22 +66,23 @@ const upsertClusterNode = async (event, c) => {
     last_healthcheck_at: existing?.last_healthcheck_at || null,
     healthcheck_error: existing?.healthcheck_error ?? null,
     metadata: json(p.metadata ?? existing?.metadata ?? null),
-    power_score: asInt(p.power_score, existing?.power_score ?? 5)
+    power_score: asInt(p.power_score, existing?.power_score ?? 5),
+    structural_version: asInt(p.structural_version, existing?.structural_version ?? 1)
   };
 
   if (existing) {
     await c.execute(
       `UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, role=?, status=?, is_self=?,
-       last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=? WHERE id=?`,
+       last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=?, structural_version=? WHERE id=?`,
       [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.port, values.role, values.status, values.is_self,
-        values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score, existing.id]
+        values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score, values.structural_version, existing.id]
     );
   } else {
     await c.execute(
-      `INSERT INTO cluster_nodes (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO cluster_nodes (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score, structural_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.port, values.role, values.status, values.is_self,
-        values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score]
+        values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score, values.structural_version]
     );
   }
 
@@ -112,7 +113,8 @@ const upsertDataPoint = async (event, c) => {
 const upsertMeasurement = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
-  if (!p.uuid || !dataPointId) throw new Error('measurement sem uuid/data_point local');
+  if (!p.uuid) throw new Error('measurement sem uuid');
+  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
   await c.execute(
     `INSERT INTO measurements (uuid, data_point_id, measurement_type, value, unit, measured_at, source, observation)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -125,7 +127,8 @@ const upsertAlert = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   const measurementId = await findIdByUuid(c, 'measurements', p.measurement_uuid);
-  if (!p.uuid || !dataPointId) throw new Error('alert sem uuid/data_point local');
+  if (!p.uuid) throw new Error('alert sem uuid');
+  if (!dataPointId || (p.measurement_uuid && !measurementId)) return { status: 'deferred', reason: 'missing_dependency' };
   if (await shouldSkipOlder(c, 'alerts', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
     `INSERT INTO alerts (uuid, data_point_id, measurement_id, alert_type, severity, current_value, unit, message, status, detected_at, resolved_at)
@@ -154,7 +157,8 @@ const upsertHistoricalMeasurement = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   const importId = await findIdByUuid(c, 'historical_imports', p.import_uuid);
-  if (!p.uuid || !dataPointId) throw new Error('historical_measurement sem uuid/data_point local');
+  if (!p.uuid) throw new Error('historical_measurement sem uuid');
+  if (!dataPointId || (p.import_uuid && !importId)) return { status: 'deferred', reason: 'missing_dependency' };
   await c.execute(
     `INSERT INTO historical_measurements (uuid, data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value, source)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,7 +170,8 @@ const upsertHistoricalMeasurement = async (event, c) => {
 const upsertChartCache = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
-  if (!p.uuid || !dataPointId) throw new Error('chart_cache sem uuid/data_point local');
+  if (!p.uuid) throw new Error('chart_cache sem uuid');
+  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
   if (await shouldSkipOlder(c, 'chart_cache', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
     `INSERT INTO chart_cache (uuid, data_point_id, chart_type, status, generated_by_node_name, total_points, date_start, date_end, payload, summary, error_message, generated_at)
@@ -188,10 +193,11 @@ const handlers = {
 };
 
 const resultStatusFor = (result) => {
+  if (result?.status === 'deferred') return 'DEFERRED_MISSING_DEPENDENCY';
   if (result.status === 'applied') return 'APPLIED';
   if (result.status === 'skipped' && result.reason === 'duplicate') return 'SKIPPED_ALREADY_APPLIED';
   if (result.status === 'skipped' && result.reason === 'older_than_local') return 'SKIPPED_OLDER_VERSION';
-  if (result.status === 'skipped') return 'SKIPPED_UNSUPPORTED';
+  if (result.status === 'skipped') return 'FAILED';
   return 'UNKNOWN';
 };
 
@@ -200,8 +206,9 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
   const [[existing]] = await connection.execute('SELECT id FROM sync_applied_events WHERE event_uuid=? LIMIT 1', [event.event_uuid]);
   if (existing) return { status: 'skipped', reason: 'duplicate' };
   const handler = handlers[event.entity_type];
-  if (!handler) return { status: 'skipped', reason: 'unsupported_entity' };
+  if (!handler) throw new Error(`entity_type não suportado: ${event.entity_type}`);
   const result = await handler(event, connection);
+  if (result && result.status === 'deferred') return result;
   const payloadHash = event.payload_hash || hashPayload(event.payload);
   await connection.execute(
     `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, entity_type, entity_key, payload_hash, applied_at)
@@ -212,9 +219,14 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
 });
 
 const applySyncEvents = async (events = []) => {
-  const safeEvents = Array.isArray(events) ? events : [];
+  const order = ['cluster_node', 'data_point', 'historical_import', 'measurement', 'historical_measurement', 'alert', 'chart_cache'];
+  const safeEvents = (Array.isArray(events) ? events : []).slice().sort((a, b) => {
+    const ai = order.indexOf(a?.entity_type);
+    const bi = order.indexOf(b?.entity_type);
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  });
   const connection = await pool.getConnection();
-  const summary = { ok: true, received: safeEvents.length, applied: 0, skipped: 0, failed: 0, results: [], errors: [] };
+  const summary = { ok: true, received: safeEvents.length, applied: 0, skipped: 0, failed: 0, deferred: 0, results: [], errors: [] };
   try {
     for (const event of safeEvents) {
       try {
@@ -223,6 +235,7 @@ const applySyncEvents = async (events = []) => {
         await connection.commit();
         const status = resultStatusFor(result);
         if (status === 'APPLIED') summary.applied += 1;
+        else if (status === 'DEFERRED_MISSING_DEPENDENCY') summary.deferred += 1;
         else summary.skipped += 1;
         summary.results.push({
           event_uuid: event?.event_uuid || null,

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const pool = require('../database/connection');
 const env = require('../config/env');
 const repo = require('./cluster-node.repository');
@@ -5,6 +6,7 @@ const applyService = require('./sync-apply.service');
 const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
 const logger = require('../utils/logger');
 const { normalizeUrl, getNodeBaseUrl, resolveNodeBaseUrl, getNodeSyncTarget } = require('../utils/sync-targets');
+const payloadService = require('./sync-payload.service');
 
 const normalizeBaseUrl = getNodeBaseUrl;
 
@@ -135,10 +137,18 @@ const pullFromNode = async ({ node_uuid, base_url, limit = 500 }) => {
   const baseUrl = String(base_url || normalizeBaseUrl(node)).replace(/\/$/, '');
   const sinceMysql = toMysqlDateTime(since);
   const data = await requestJson(`${baseUrl}/api/sync/events?limit=${limit}${sinceMysql ? `&since=${encodeURIComponent(sinceMysql)}` : ''}`);
-  const summary = await applyService.applySyncEvents(data.events || []);
-  const lastSeen = (data.events || []).at(-1)?.created_at || since;
-  if (remoteUuid) await updateCursor(remoteUuid, lastSeen, null, { nodeName: node?.node_name });
-  return { ok: true, pulled: data.events?.length || 0, ...summary };
+  const events = data.events || [];
+  const summary = await applyService.applySyncEvents(events);
+  const successfulStatuses = new Set(['APPLIED', 'SKIPPED_ALREADY_APPLIED', 'SKIPPED_OLDER_VERSION']);
+  const statusByUuid = new Map((summary.results || []).map((result) => [result.event_uuid, String(result.status || 'UNKNOWN')]));
+  let lastSeen = since;
+  for (const event of events) {
+    if (!successfulStatuses.has(statusByUuid.get(event.event_uuid))) break;
+    lastSeen = event.created_at;
+  }
+  if (remoteUuid && lastSeen !== since) await updateCursor(remoteUuid, lastSeen, null, { nodeName: node?.node_name });
+  else if (remoteUuid && (summary.failed || summary.deferred)) await updateCursor(remoteUuid, null, `pull pendente: failed=${summary.failed || 0} deferred=${summary.deferred || 0}`, { nodeName: node?.node_name });
+  return { ok: true, pulled: events.length, ...summary };
 };
 
 const getPendingEventsForNode = async (nodeUuid, limit = 500) => {
@@ -200,6 +210,13 @@ const markDeliverySent = async (nodeUuid, eventUuid) => {
 };
 
 const markDeliveryErrored = async (nodeUuid, eventUuid, status, error = null) => {
+  if (String(status || '').toUpperCase() === 'DEFERRED_MISSING_DEPENDENCY') {
+    await pool.execute(
+      `UPDATE sync_event_deliveries SET status='PENDING', last_error=? WHERE event_uuid=? AND target_node_uuid=?`,
+      [String(error || status || 'dependência ausente no node remoto').slice(0, 1000), eventUuid, nodeUuid]
+    );
+    return;
+  }
   await pool.execute(
     `UPDATE sync_event_deliveries
         SET attempts=attempts+1,
@@ -279,7 +296,7 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
       received += Number(data.received || 0);
       applied += Number(data.applied || 0);
       skipped += Number(data.skipped || 0);
-      failed += Number(data.failed || 0);
+      failed += Number(data.failed || 0) + Number(data.deferred || 0);
       if (Array.isArray(data.errors)) errors.push(...data.errors);
       const deliverySummary = await markDeliveriesFromResults(remoteUuid, batch, data.results);
       sent += deliverySummary.markedSent;
@@ -289,7 +306,7 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
       if (Number(data.received || 0) > 0 && Number(data.applied || 0) === 0 && Number(data.skipped || 0) === 0) {
         logger.warn(`[sync] ${nodeName}: received=${data.received} mas applied=0 e skipped=0; verifique o receptor`);
       }
-      logger.info(`[sync] ${nodeName}: received=${Number(data.received || 0)} applied=${Number(data.applied || 0)} skipped=${Number(data.skipped || 0)} failed=${Number(data.failed || 0)}`);
+      if (Number(data.received || 0) || Number(data.failed || 0) || Number(data.deferred || 0)) logger.info(`[sync] ${nodeName}: received=${Number(data.received || 0)} applied=${Number(data.applied || 0)} skipped=${Number(data.skipped || 0)} failed=${Number(data.failed || 0)} deferred=${Number(data.deferred || 0)}`);
       if (Number(data.failed || 0) > 0 && data.errors?.length) logger.warn(`[sync] erros reportados por ${nodeName}:`, data.errors);
     } catch (error) {
       if (error.status === 413) {
@@ -307,6 +324,170 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
 
   if (pendingCount > 0) logger.info(`[sync] ainda existem eventos pendentes para ${nodeName}, continuar no próximo ciclo`);
   return { ok: true, target_url: destination, sent, attempted, received, applied, skipped, failed, errors, batches, pending: pendingCount };
+};
+
+
+const BOOTSTRAP_ENTITIES = ['cluster_nodes', 'data_points', 'historical_imports', 'measurements', 'historical_measurements', 'alerts', 'chart_cache'];
+const entityTypeForTable = {
+  cluster_nodes: 'cluster_node',
+  data_points: 'data_point',
+  measurements: 'measurement',
+  alerts: 'alert',
+  historical_imports: 'historical_import',
+  historical_measurements: 'historical_measurement',
+  chart_cache: 'chart_cache'
+};
+const payloadGetterForTable = {
+  cluster_nodes: payloadService.getClusterNodePayloadById,
+  data_points: payloadService.getDataPointPayloadById,
+  measurements: payloadService.getMeasurementPayloadById,
+  alerts: payloadService.getAlertPayloadById,
+  historical_imports: payloadService.getHistoricalImportPayloadById,
+  historical_measurements: payloadService.getHistoricalMeasurementPayloadById,
+  chart_cache: payloadService.getChartCachePayloadById
+};
+
+const getBootstrapManifest = async () => {
+  const counts = {};
+  for (const table of BOOTSTRAP_ENTITIES) {
+    const [[row]] = await pool.execute(`SELECT COUNT(*) AS total FROM ${table}`);
+    counts[table] = Number(row?.total || 0);
+  }
+  const serverTime = nowMysql();
+  return { ok: true, counts, generated_at: new Date().toISOString(), server_time: serverTime };
+};
+
+const exportBootstrapEntity = async ({ entity_type, offset = 0, limit = 500 } = {}) => {
+  const table = String(entity_type || '');
+  if (!BOOTSTRAP_ENTITIES.includes(table)) {
+    const error = new Error('entity_type inválido para bootstrap/export');
+    error.statusCode = 400;
+    throw error;
+  }
+  const safeLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const [rows] = await pool.execute(`SELECT id FROM ${table} ORDER BY id ASC LIMIT ${safeLimit} OFFSET ${safeOffset}`);
+  const getter = payloadGetterForTable[table];
+  const items = [];
+  for (const row of rows) {
+    const payload = await getter(row.id, pool);
+    if (payload) items.push(payload);
+  }
+  return { ok: true, entity_type: table, offset: safeOffset, limit: safeLimit, count: items.length, items };
+};
+
+const updateBootstrapRun = async (id, patch = {}) => {
+  const fields = [];
+  const params = [];
+  for (const [key, value] of Object.entries(patch)) {
+    fields.push(`${key}=?`);
+    params.push(value);
+  }
+  if (!fields.length) return;
+  params.push(id);
+  await pool.execute(`UPDATE bootstrap_runs SET ${fields.join(', ')} WHERE id=?`, params);
+};
+
+const applyBootstrapItems = async (table, items, sourceNodeUuid) => {
+  const events = items.map((payload) => ({
+    event_uuid: crypto.randomUUID(),
+    source_node_uuid: sourceNodeUuid || crypto.randomUUID(),
+    entity_type: entityTypeForTable[table],
+    entity_key: payload.uuid || payload.node_uuid,
+    operation: 'UPSERT',
+    payload,
+    created_at: nowMysql()
+  }));
+  return applyService.applySyncEvents(events);
+};
+
+const runFullBootstrap = async (runId, hostUrl) => {
+  let processed = 0;
+  try {
+    logger.info(`[bootstrap] iniciado host=${hostUrl}`);
+    const manifest = await requestJson(`${hostUrl}/api/sync/bootstrap/manifest`);
+    const total = BOOTSTRAP_ENTITIES.reduce((sum, table) => sum + Number(manifest.counts?.[table] || 0), 0);
+    await updateBootstrapRun(runId, { total_items: total, started_at: nowMysql(), progress_percent: 0 });
+    const identity = await requestJson(`${hostUrl}/api/cluster/self-identity`).catch(() => ({}));
+    for (const table of BOOTSTRAP_ENTITIES) {
+      await updateBootstrapRun(runId, { current_entity: table });
+      const entityTotal = Number(manifest.counts?.[table] || 0);
+      for (let offset = 0; offset < entityTotal; offset += 500) {
+        const exported = await requestJson(`${hostUrl}/api/sync/bootstrap/export?entity_type=${encodeURIComponent(table)}&offset=${offset}&limit=500`);
+        await applyBootstrapItems(table, exported.items || [], identity.node_uuid || crypto.randomUUID());
+        processed += exported.items?.length || 0;
+        const percent = total ? Math.min(100, (processed / total) * 100) : 100;
+        await updateBootstrapRun(runId, { processed_items: processed, progress_percent: percent });
+        if (table === 'historical_measurements' || exported.items?.length) logger.info(`[bootstrap] ${table} ${Math.min(offset + (exported.items?.length || 0), entityTotal)}/${entityTotal}`);
+      }
+    }
+    let since = manifest.server_time;
+    let lastSeen = since;
+    while (true) {
+      const data = await requestJson(`${hostUrl}/api/sync/events?limit=500&since=${encodeURIComponent(since)}`);
+      const events = data.events || [];
+      if (!events.length) break;
+      await applyService.applySyncEvents(events);
+      lastSeen = toMysqlDateTime(events.at(-1).created_at);
+      since = lastSeen;
+      if (events.length < 500) break;
+    }
+    if (identity.node_uuid) await updateCursor(identity.node_uuid, lastSeen, null, { nodeName: identity.node_name });
+    await updateBootstrapRun(runId, { status: 'DONE', current_entity: null, processed_items: processed, progress_percent: 100, finished_at: nowMysql(), error_message: null });
+    logger.info('[bootstrap] concluído');
+  } catch (error) {
+    logger.error(`[bootstrap] falhou: ${error.message}`);
+    await updateBootstrapRun(runId, { status: 'FAILED', error_message: error.message, finished_at: nowMysql() }).catch(() => {});
+  }
+};
+
+const startFullBootstrap = async ({ host_url }) => {
+  const baseUrl = normalizeUrl(host_url)?.replace(/\/+$/, '');
+  if (!baseUrl) throw new Error('host_url obrigatório');
+  const [result] = await pool.execute(
+    `INSERT INTO bootstrap_runs (host_url, status, started_at) VALUES (?, 'RUNNING', ?)`,
+    [baseUrl, nowMysql()]
+  );
+  setImmediate(() => runFullBootstrap(result.insertId, baseUrl));
+  return { ok: true, message: 'Bootstrap iniciado.', bootstrap_run_id: result.insertId };
+};
+
+const getFullBootstrapStatus = async () => {
+  const [rows] = await pool.execute('SELECT * FROM bootstrap_runs ORDER BY id DESC LIMIT 10');
+  return { ok: true, runs: rows, current: rows[0] || null };
+};
+
+const getFingerprint = async () => {
+  await pool.execute('SET SESSION group_concat_max_len = 10485760');
+  const result = {};
+  const fingerprintQueries = {
+    cluster_nodes: `SELECT COUNT(*) AS count, MAX(updated_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', node_uuid, node_name, tailscale_ip, public_url, port, role, power_score, structural_version, COALESCE(metadata,'')) ORDER BY node_uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM cluster_nodes`,
+    data_points: `SELECT COUNT(*) AS count, MAX(updated_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', uuid, name, type, latitude, longitude, city_region, status, normal_level, warning_level, critical_level, measurement_unit) ORDER BY uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM data_points`,
+    measurements: `SELECT COUNT(*) AS count, MAX(m.created_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', m.uuid, dp.uuid, m.measurement_type, m.value, m.unit, m.measured_at, m.source, COALESCE(m.observation,'')) ORDER BY m.uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM measurements m JOIN data_points dp ON dp.id=m.data_point_id`,
+    alerts: `SELECT COUNT(*) AS count, MAX(a.updated_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', a.uuid, dp.uuid, COALESCE(m.uuid,''), a.alert_type, a.severity, a.current_value, a.unit, a.message, a.status, a.detected_at, COALESCE(a.resolved_at,'')) ORDER BY a.uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM alerts a JOIN data_points dp ON dp.id=a.data_point_id LEFT JOIN measurements m ON m.id=a.measurement_id`,
+    historical_imports: `SELECT COUNT(*) AS count, MAX(hi.updated_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', hi.uuid, COALESCE(dp.uuid,''), hi.original_filename, COALESCE(hi.sensor_name,''), hi.status, hi.total_rows, hi.imported_rows, hi.failed_rows, hi.raw_unit, hi.converted_unit, COALESCE(hi.error_message,''), COALESCE(hi.completed_at,'')) ORDER BY hi.uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM historical_imports hi LEFT JOIN data_points dp ON dp.id=hi.data_point_id`,
+    historical_measurements: `SELECT COUNT(*) AS count, MAX(hm.created_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', hm.uuid, dp.uuid, COALESCE(hi.uuid,''), hm.measured_at, hm.raw_value, hm.raw_unit, hm.value, hm.unit, COALESCE(hm.max_value,''), COALESCE(hm.min_value,''), hm.source) ORDER BY hm.uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM historical_measurements hm JOIN data_points dp ON dp.id=hm.data_point_id LEFT JOIN historical_imports hi ON hi.id=hm.import_id`,
+    chart_cache: `SELECT COUNT(*) AS count, MAX(cc.updated_at) AS latest_at,
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', cc.uuid, dp.uuid, cc.chart_type, cc.status, COALESCE(cc.generated_by_node_name,''), cc.total_points, COALESCE(cc.date_start,''), COALESCE(cc.date_end,''), COALESCE(cc.generated_at,'')) ORDER BY cc.uuid SEPARATOR '#'),''), 256) AS checksum
+      FROM chart_cache cc JOIN data_points dp ON dp.id=cc.data_point_id`
+  };
+  for (const table of BOOTSTRAP_ENTITIES) {
+    const [[row]] = await pool.execute(fingerprintQueries[table]);
+    result[table] = { count: Number(row?.count || 0), latest_at: row?.latest_at || null, checksum: row?.checksum || null };
+  }
+  return { ok: true, generated_at: new Date().toISOString(), tables: result };
 };
 
 const fullBootstrap = async ({ host_url }) => {
@@ -330,6 +511,24 @@ const fullBootstrap = async ({ host_url }) => {
   return { ok: true, host: identity, bootstrapped_nodes: bootstrap.nodes?.length || 0, pulled };
 };
 
+
+const compareFingerprint = async ({ node_uuid } = {}) => {
+  const local = await getFingerprint();
+  if (!node_uuid) return { ok: true, local, comparisons: [] };
+  const node = await repo.findByNodeUuid(node_uuid);
+  if (!node) throw new Error('node_uuid remoto não encontrado');
+  const self = await repo.getSelfNode();
+  const resolved = resolveNodeBaseUrl(node, self);
+  if (!resolved.baseUrl) throw new Error('URL remota não configurada');
+  const remote = await requestJson(`${resolved.baseUrl}/api/sync/fingerprint`);
+  const comparisons = BOOTSTRAP_ENTITIES.map((table) => {
+    const l = local.tables?.[table] || {};
+    const r = remote.tables?.[table] || {};
+    return { table, status: l.count === r.count && l.checksum === r.checksum ? 'OK' : 'DIVERGENT', local: l, remote: r };
+  });
+  return { ok: true, node_uuid, node_name: node.node_name, target_url: `${resolved.baseUrl}/api/sync/fingerprint`, comparisons };
+};
+
 const getStatus = async () => {
   const self = await repo.getSelfNode();
   const nodes = await repo.getExternalNodes();
@@ -338,9 +537,9 @@ const getStatus = async () => {
     const [[cursor]] = await pool.execute('SELECT * FROM sync_node_cursors WHERE remote_node_uuid=? LIMIT 1', [node.node_uuid]);
     const [[pending]] = await pool.execute("SELECT COUNT(*) AS total FROM sync_event_deliveries WHERE target_node_uuid=? AND status='PENDING'", [node.node_uuid]);
     const resolved = resolveNodeBaseUrl(node, self);
-    result.push({ node_uuid: node.node_uuid, node_name: node.node_name, target_url: resolved.targetUrl || getNodeSyncTarget(node), status: node.status, last_sync_at: cursor?.last_sync_at || null, pending_events: Number(pending?.total || 0), last_error: cursor?.last_error || null });
+    result.push({ node_uuid: node.node_uuid, node_name: node.node_name, target_url: resolved.targetUrl || getNodeSyncTarget(node), status: node.status, last_sync_at: cursor?.last_sync_at || null, pending_events: Number(pending?.total || 0), last_error: cursor?.last_error || null, last_pull_count: 0, last_push_count: 0, last_remote_applied: 0, last_remote_failed: 0 });
   }
   return { ok: true, self, nodes: result };
 };
 
-module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, getStatus, updateCursor, getCursor, normalizeBaseUrl, getNodeBaseUrl, getNodeSyncTarget };
+module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, startFullBootstrap, getFullBootstrapStatus, getBootstrapManifest, exportBootstrapEntity, getFingerprint, compareFingerprint, getStatus, updateCursor, getCursor, normalizeBaseUrl, getNodeBaseUrl, getNodeSyncTarget };
