@@ -566,7 +566,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-xs font-mono text-slate-600 max-w-xs break-all">${escapeHtml(targetUrl)}</td>
                     <td class="p-4 text-sm">${sync.pending_events ?? (s.is_self ? '-' : '0')}</td>
                     <td class="p-4"><span class="font-mono">${s.power_score ?? 5}/10</span></td>
-                    <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button>' : ''}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
+                    <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button>' : '<button class="px-2 py-1 border rounded" data-action="fix-url-tailscale" data-node-id="'+s.id+'">Corrigir URL pelo IP Tailscale</button>'}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
                 </tr>`;
         });
     }
@@ -707,6 +707,22 @@ document.addEventListener('DOMContentLoaded', () => {
         initCards();
     });
 
+
+    document.getElementById('compare-db-btn')?.addEventListener('click', async (event) => {
+        const btn = event.currentTarget;
+        btn.disabled = true;
+        try {
+            const remote = state.servidores.find((node) => !node.is_self && node.node_uuid);
+            const data = await apiFetch(remote ? `/api/sync/compare?node_uuid=${encodeURIComponent(remote.node_uuid)}` : '/api/sync/compare');
+            const rows = (data.comparisons || []).map((item) => `${item.table}: ${item.status} (local=${item.local?.count ?? '-'}, remoto=${item.remote?.count ?? '-'})`).join(' | ');
+            setFeedback('join-requests-feedback', rows ? `Comparação com ${data.node_name || 'local'}: ${rows}` : 'Fingerprint local calculado. Configure um nó remoto para comparar.');
+        } catch (error) {
+            setFeedback('join-requests-feedback', `Erro ao comparar bancos: ${error.message}`, true);
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
     document.getElementById('sync-now-btn')?.addEventListener('click', async (event) => {
         const btn = event.currentTarget;
         btn.disabled = true;
@@ -751,6 +767,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('tbody-servidores')?.addEventListener('click', async (e) => {
+      const fixBtn = e.target.closest('[data-action="fix-url-tailscale"]');
+      if (fixBtn) {
+        await apiFetch(`/api/cluster/nodes/${fixBtn.dataset.nodeId}/fix-url-tailscale`, { method: 'POST', body: JSON.stringify({}) });
+        await fetchClusterNodes();
+        renderServidores();
+        return;
+      }
       if (!e.target.closest('[data-action="edit-self"]')) return;
       const self = state.servidores.find((n) => n.is_self);
       if (!self) return;

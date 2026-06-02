@@ -15,7 +15,8 @@ const mapNode = (row) => ({
   ...row,
   is_self: Number(row.is_self),
   port: asNumber(row.port, null),
-  power_score: asNumber(row.power_score, 5)
+  power_score: asNumber(row.power_score, 5),
+  structural_version: asNumber(row.structural_version, 1)
 });
 
 const toJsonValue = (value) => {
@@ -50,8 +51,15 @@ const pickClusterNodeStructuralFields = (node = {}) => ({
   port: node.port == null ? null : Number(node.port),
   role: node.role || null,
   power_score: node.power_score == null ? 5 : Number(node.power_score),
-  metadata: normalizeMetadata(node.metadata)
+  metadata: normalizeMetadata(node.metadata),
+  structural_version: node.structural_version == null ? 1 : Number(node.structural_version)
 });
+
+const changedStructuralFields = (before = {}, after = {}) => {
+  const b = pickClusterNodeStructuralFields(before);
+  const a = pickClusterNodeStructuralFields(after);
+  return Object.keys(a).filter((key) => JSON.stringify(b[key]) !== JSON.stringify(a[key]));
+};
 
 const hasStructuralChange = (before, after) => JSON.stringify(pickClusterNodeStructuralFields(before)) !== JSON.stringify(pickClusterNodeStructuralFields(after));
 
@@ -143,7 +151,8 @@ class ClusterNodeRepository {
       last_healthcheck_at: toMysqlDateTime(data.last_healthcheck_at) ?? existing?.last_healthcheck_at ?? null,
       healthcheck_error: data.healthcheck_error ?? existing?.healthcheck_error ?? null,
       metadata: toJsonValue(data.metadata ?? existing?.metadata ?? null),
-      power_score: asNumber(data.power_score, existing?.power_score ?? 5)
+      power_score: asNumber(data.power_score, existing?.power_score ?? 5),
+      structural_version: asNumber(data.structural_version, existing?.structural_version ?? 1)
     };
 
     const node = existing
@@ -188,7 +197,9 @@ class ClusterNodeRepository {
   async maybeCreateClusterNodeSyncEvent(before, after, options = {}) {
     if (!after) return null;
     if (options.skipSyncEvent) return null;
-    if (before && !hasStructuralChange(before, after)) return null;
+    const changedFields = before ? changedStructuralFields(before, after) : Object.keys(pickClusterNodeStructuralFields(after));
+    logger.debug(`[sync-event] cluster_node changed=${changedFields.length > 0} fields=${changedFields.join(',')}`);
+    if (before && changedFields.length === 0) return null;
     const syncPayload = await syncPayloadService.getClusterNodePayloadById(after.id);
     if (!syncPayload) return null;
     return syncEventService.createEntitySyncEvent('cluster_node', syncPayload, 'UPSERT', db, { reason: options.reason || 'manual-edit' });
@@ -196,9 +207,9 @@ class ClusterNodeRepository {
 
   async createNode(payload, options = {}) {
     const [result] = await db.execute(`INSERT INTO cluster_nodes
-      (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5]);
+      (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score, structural_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, payload.structural_version ?? 1]);
     const node = await this.findById(result.insertId);
     await this.maybeCreateClusterNodeSyncEvent(null, node, options);
     return node;
@@ -207,9 +218,14 @@ class ClusterNodeRepository {
   async updateNode(id, payload, options = {}) {
     const before = await this.findById(id);
     if (!before) return null;
+    const candidate = { ...before, ...payload };
+    const structuralChanged = hasStructuralChange(before, candidate);
+    const structuralVersion = options.skipSyncEvent && payload.structural_version
+      ? Number(payload.structural_version)
+      : (structuralChanged ? Number(before.structural_version || 1) + 1 : Number(before.structural_version || 1));
     await db.execute(`UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, role=?, status=?, is_self=?,
-      last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=? WHERE id=?`,
-    [payload.node_uuid || before.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, id]);
+      last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=?, structural_version=? WHERE id=?`,
+    [payload.node_uuid || before.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, structuralVersion, id]);
     const node = await this.findById(id);
     await this.maybeCreateClusterNodeSyncEvent(before, node, options);
     return node;

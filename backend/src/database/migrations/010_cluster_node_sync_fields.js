@@ -14,6 +14,13 @@ module.exports = {
       await db.execute('ALTER TABLE cluster_nodes ADD COLUMN port INT NULL AFTER public_url');
     }
 
+
+    if (!(await columnExists(db, 'cluster_nodes', 'structural_version'))) {
+      await db.execute('ALTER TABLE cluster_nodes ADD COLUMN structural_version BIGINT NOT NULL DEFAULT 1 AFTER power_score');
+    }
+
+    await db.execute('UPDATE cluster_nodes SET structural_version = 1 WHERE structural_version IS NULL OR structural_version < 1');
+
     if (!(await columnExists(db, 'cluster_join_requests', 'node_uuid'))) {
       await db.execute('ALTER TABLE cluster_join_requests ADD COLUMN node_uuid CHAR(36) NULL AFTER id');
     }

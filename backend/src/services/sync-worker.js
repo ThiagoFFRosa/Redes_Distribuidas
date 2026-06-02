@@ -36,14 +36,14 @@ const runCycle = async () => {
         if (!base_url) throw new Error('URL de destino não configurada');
         if (resolved.matchedSelfUrl) logger.warn(`[sync] AVISO: destino calculado para ${node.node_name} parece ser o próprio servidor; usando fallback: ${base_url}`);
         logger.debug(`[sync] node remoto ${node.node_name}: public_url=${node.public_url || '-'} tailscale_ip=${node.tailscale_ip || '-'} port=${node.port || 3000} target=${target_url}`);
-        logger.info(`[sync] target ${node.node_name} = ${target_url}`);
+        logger.debug(`[sync] target ${node.node_name} = ${target_url}`);
         if (!(await canRetryNode(node))) {
           results.push({ node_uuid: node.node_uuid, node_name: node.node_name, target_url, skipped: true, reason: 'retry_cooldown' });
           continue;
         }
         logger.debug(`[sync] puxando eventos de ${node.node_name}`);
         const pulled = await coordinator.pullFromNode({ node_uuid: node.node_uuid, base_url });
-        if (pulled.applied || pulled.failed) logger.info(`[sync] pull ${node.node_name}: received=${pulled.received || pulled.pulled || 0} applied=${pulled.applied || 0} skipped=${pulled.skipped || 0} failed=${pulled.failed || 0}`);
+        if (pulled.applied || pulled.failed || pulled.deferred) logger.info(`[sync] pull ${node.node_name}: received=${pulled.received || pulled.pulled || 0} applied=${pulled.applied || 0} skipped=${pulled.skipped || 0} failed=${pulled.failed || 0}`);
         const pushed = await coordinator.pushToNode({ node_uuid: node.node_uuid, base_url });
         await coordinator.updateCursor(node.node_uuid, null, null, { nodeName: node.node_name });
         results.push({

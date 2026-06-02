@@ -5,6 +5,8 @@ const healthService = require('../services/cluster-health.service');
 const { requireAuth } = require('../services/auth.service');
 const env = require('../config/env');
 const logger = require('../utils/logger');
+const { getNodeSyncTarget } = require('../utils/sync-targets');
+const syncCoordinator = require('../services/sync-coordinator.service');
 
 const router = express.Router();
 const ROLES = ['HOST', 'STANDBY', 'UNKNOWN'];
@@ -90,7 +92,9 @@ const serializeClusterNode = (node = {}) => ({
   healthcheck_error: node.healthcheck_error || null,
   metadata: parseMetadata(node.metadata),
   created_at: node.created_at || null,
-  updated_at: node.updated_at || null
+  updated_at: node.updated_at || null,
+  structural_version: Number(node.structural_version || 1),
+  sync_target_url: getNodeSyncTarget(node)
 });
 
 const applyBootstrapNodes = async (nodes = []) => {
@@ -220,6 +224,16 @@ router.post('/self', async (req, res) => { const payload = normalize(req.body); 
 router.get('/nodes', async (_req, res) => res.json({ nodes: (await repo.getAllNodes()).map(serializeClusterNode) }));
 router.post('/nodes', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); if (await repo.findByTailscaleIp(payload.tailscale_ip)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); payload.port = payload.port || env.port; const node = await repo.createNode({ ...payload, is_self: 0, status: 'UNKNOWN', last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: null }, { reason: 'manual-edit' }); res.status(201).json({ node: serializeClusterNode(node) }); });
 router.put('/nodes/:id', async (req, res) => { const id = Number(req.params.id); const current = await repo.findById(id); if (!current) return res.status(404).json({ message: 'Nó não encontrado.' }); const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip); if (existingIp && existingIp.id !== id) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); payload.port = payload.port || current.port || env.port; const node = await repo.updateNodeStructuralData(id, { ...payload, is_self: current.is_self }, { reason: 'manual-edit' }); res.json({ node: serializeClusterNode(node) }); });
+router.post('/nodes/:id/fix-url-tailscale', async (req, res) => {
+  const id = Number(req.params.id);
+  const node = await repo.findById(id);
+  if (!node) return res.status(404).json({ message: 'Nó não encontrado.' });
+  if (!node.tailscale_ip) return res.status(400).json({ message: 'tailscale_ip não configurado.' });
+  const port = normalizePort(node.port) || env.port;
+  const publicUrl = `http://${String(node.tailscale_ip).trim()}:${port}`;
+  const updated = await repo.updateNodeStructuralData(id, { public_url: publicUrl, port }, { reason: 'manual-edit' });
+  res.json({ ok: true, node: serializeClusterNode(updated) });
+});
 router.delete('/nodes/:id', async (req, res) => { const id = Number(req.params.id); const node = await repo.findById(id); if (!node) return res.status(404).json({ message: 'Nó não encontrado.' }); if (node.is_self) return res.status(400).json({ message: 'Não é permitido remover o servidor atual.' }); await repo.deleteNode(id); res.json({ ok: true }); });
 router.post('/nodes/:id/healthcheck', async (req, res) => { const id = Number(req.params.id); const node = await repo.findById(id); if (!node) return res.status(404).json({ message: 'Nó não encontrado.' }); const updated = await healthService.checkNode(node); const ok = updated.status === 'ONLINE'; res.status(ok ? 200 : 503).json({ ok, status: updated.status, node: updated, error: ok ? null : updated.healthcheck_error }); });
 router.post('/healthcheck-all', async (_req, res) => res.json(await healthService.checkAllNodes()));
@@ -309,11 +323,8 @@ router.post('/request-join-host', async (req, res) => {
     logger.info(`[request-join-host] resposta do host: ${data.status || (data.already_registered ? 'ALREADY_REGISTERED' : 'UNKNOWN')}`);
 
     if (data.already_registered || data.status === 'APPROVED') {
-      const bootstrapResp = await fetch(`${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/bootstrap`, { headers: { 'X-Cluster-Secret': env.sessionSecret } });
-      if (bootstrapResp.ok) {
-        const bootstrapData = await bootstrapResp.json();
-        await applyBootstrapNodes(bootstrapData.nodes || []);
-      }
+      const bootstrapRun = await syncCoordinator.startFullBootstrap({ host_url: normalizedHostUrl });
+      return res.json({ ...data, bootstrap: bootstrapRun });
     }
 
     return res.json(data);

@@ -13,6 +13,12 @@ const requireClusterSecret = (req, res, next) => {
   next();
 };
 
+const requireClusterSecretOrAuth = (req, res, next) => {
+  const secret = req.header('x-cluster-secret');
+  if (env.sessionSecret && secret === env.sessionSecret) return next();
+  return requireAuth(req, res, next);
+};
+
 router.get('/events', requireClusterSecret, async (req, res, next) => {
   try {
     const events = await coordinator.listEvents({ since: req.query.since || null, limit: req.query.limit || 500 });
@@ -42,8 +48,28 @@ router.post('/push-to-node', requireClusterSecret, async (req, res, next) => {
   try { res.json(await coordinator.pushToNode(req.body || {})); } catch (error) { next(error); }
 });
 
-router.post('/full-bootstrap', requireClusterSecret, async (req, res, next) => {
-  try { res.json(await coordinator.fullBootstrap(req.body || {})); } catch (error) { next(error); }
+router.get('/bootstrap/manifest', requireClusterSecret, async (_req, res, next) => {
+  try { res.json(await coordinator.getBootstrapManifest()); } catch (error) { next(error); }
+});
+
+router.get('/bootstrap/export', requireClusterSecret, async (req, res, next) => {
+  try { res.json(await coordinator.exportBootstrapEntity(req.query || {})); } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message }); next(error); }
+});
+
+router.get('/fingerprint', requireClusterSecretOrAuth, async (_req, res, next) => {
+  try { res.json(await coordinator.getFingerprint()); } catch (error) { next(error); }
+});
+
+router.post('/full-bootstrap', requireAuth, async (req, res, next) => {
+  try { res.json(await coordinator.startFullBootstrap(req.body || {})); } catch (error) { next(error); }
+});
+
+router.get('/full-bootstrap/status', requireAuth, async (_req, res, next) => {
+  try { res.json(await coordinator.getFullBootstrapStatus()); } catch (error) { next(error); }
+});
+
+router.get('/compare', requireAuth, async (req, res, next) => {
+  try { res.json(await coordinator.compareFingerprint(req.query || {})); } catch (error) { next(error); }
 });
 
 router.get('/status', requireAuth, async (_req, res, next) => {
