@@ -25,11 +25,11 @@ const createOutboxEvents = async (events, connection = pool) => {
 
 const upsertDataPoint = async (payload, connection) => {
   await connection.execute(
-    `INSERT INTO data_points (id, name, type, latitude, longitude, city_region, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO data_points (id, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), latitude=VALUES(latitude), longitude=VALUES(longitude), city_region=VALUES(city_region),
-       description=VALUES(description), status=VALUES(status), normal_level=VALUES(normal_level), warning_level=VALUES(warning_level), critical_level=VALUES(critical_level), measurement_unit=VALUES(measurement_unit)`,
-    [payload.id, payload.name, payload.type || 'RIVER_LEVEL', payload.latitude ?? null, payload.longitude ?? null, payload.city_region ?? null, payload.description ?? null, payload.status || 'ACTIVE', payload.normal_level ?? null, payload.warning_level ?? null, payload.critical_level ?? null, payload.measurement_unit || 'm', payload.created_by_user_id ?? null]
+       location_status=VALUES(location_status), location_error=VALUES(location_error), description=VALUES(description), status=VALUES(status), normal_level=VALUES(normal_level), warning_level=VALUES(warning_level), critical_level=VALUES(critical_level), measurement_unit=VALUES(measurement_unit)`,
+    [payload.id, payload.name, payload.type || 'RIVER_LEVEL', payload.latitude ?? null, payload.longitude ?? null, payload.city_region ?? null, payload.location_status || ((payload.latitude == null || payload.longitude == null) ? 'NEEDS_REVIEW' : 'VALID'), payload.location_error ?? null, payload.description ?? null, payload.status || 'ACTIVE', payload.normal_level ?? null, payload.warning_level ?? null, payload.critical_level ?? null, payload.measurement_unit || 'm', payload.created_by_user_id ?? null]
   );
 };
 

@@ -10,6 +10,10 @@ document.addEventListener('DOMContentLoaded', () => {
        ESTADO DA APLICAÇÃO (Mock)
        ========================================================================== */
     
+    const isValidLatitude = (value) => { const n = Number(value); return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(n) && n >= -90 && n <= 90; };
+    const isValidLongitude = (value) => { const n = Number(value); return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(n) && n >= -180 && n <= 180; };
+    const hasValidCoordinates = (point = {}) => isValidLatitude(point.lat ?? point.latitude) && isValidLongitude(point.lng ?? point.longitude);
+
     const state = {
         pontos: [
             { id: 1, nome: 'Rio Paraíba do Sul - Centro', lat: -23.1868, lng: -45.8860, cidade: 'SJC - SP', tipo: 'nivel', status: 'ativo', nivel: 2.30 },
@@ -158,8 +162,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }).addTo(map);
 
         // Adicionar marcadores baseados no state
-        state.pontos.forEach(p => {
-            const m = L.circleMarker([p.lat, p.lng], {
+        const validMapPoints = state.pontos.filter(hasValidCoordinates);
+        validMapPoints.forEach(p => {
+            const lat = Number(p.lat ?? p.latitude);
+            const lng = Number(p.lng ?? p.longitude);
+            const m = L.circleMarker([lat, lng], {
                 radius: 8,
                 fillColor: p.nivel > 5 ? "#ef4444" : "#0284c7",
                 color: "#fff",
@@ -206,8 +213,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="font-medium text-dark">${p.nome}</div>
                         <div class="text-xs text-slate-500">ID: ${p.id}</div>
                     </td>
-                    <td class="p-4 text-slate-600">${p.cidade}</td>
-                    <td class="p-4 text-xs font-mono text-slate-500">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</td>
+                    <td class="p-4 text-slate-600">${hasValidCoordinates(p) ? p.cidade : 'Sem coordenadas — Corrigir'}</td>
+                    <td class="p-4 text-xs font-mono text-slate-500">${hasValidCoordinates(p) ? `${Number(p.lat ?? p.latitude).toFixed(4)}, ${Number(p.lng ?? p.longitude).toFixed(4)}` : '-'}</td>
                     <td class="p-4">
                         <span class="px-2 py-1 rounded bg-green-100 text-green-700 text-xs font-semibold text-center inline-block w-16">
                             ${p.status.toUpperCase()}
@@ -261,10 +268,12 @@ document.addEventListener('DOMContentLoaded', () => {
             renderTabelaPontos();
             initCards();
 
-            // Adicionar ao mapa (simples marker verde pra indicar novo)
-            L.circleMarker([novoPonto.lat, novoPonto.lng], {
-                radius: 8, fillColor: "#22c55e", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.8
-            }).addTo(map).bindPopup(`<b>${novoPonto.nome}</b><br>Ponto Novo cadatrado.`);
+            // Adicionar ao mapa somente se houver coordenadas válidas
+            if (hasValidCoordinates(novoPonto)) {
+                L.circleMarker([Number(novoPonto.lat), Number(novoPonto.lng)], {
+                    radius: 8, fillColor: "#22c55e", color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.8
+                }).addTo(map).bindPopup(`<b>${novoPonto.nome}</b><br>Ponto Novo cadatrado.`);
+            }
 
             alert(`Ponto "${novoPonto.nome}" cadastrado com sucesso!`);
         });

@@ -8,6 +8,7 @@ const dataPointRepository = require('../repositories/data-point.repository');
 const syncEventService = require('./sync-event.service');
 const syncPayloadService = require('./sync-payload.service');
 const chartService = require('./historical-chart.service');
+const { isBlank, isValidLatitude, isValidLongitude, normalizeLocationForStorage } = require('../utils/coordinates');
 
 const BATCH_SIZE = 500;
 
@@ -91,12 +92,24 @@ const ensureDataPoint = async (fields, file, userId) => {
     return existing;
   }
   const name = String(fields.sensor_name || '').trim() || filenameToSensorName(file.originalname);
+  const hasLatitude = !isBlank(fields.latitude);
+  const hasLongitude = !isBlank(fields.longitude);
+  const missingCoordinates = !hasLatitude || !hasLongitude;
+  const invalidCoordinates = (hasLatitude && !isValidLatitude(fields.latitude)) || (hasLongitude && !isValidLongitude(fields.longitude));
+  const location = normalizeLocationForStorage({
+    latitude: fields.latitude,
+    longitude: fields.longitude,
+    missingError: 'Coordenadas ausentes no CSV',
+    invalidError: 'Coordenadas inválidas no CSV'
+  });
   const payload = {
     name,
     type: 'RIVER_LEVEL',
-    latitude: parseOptionalNumber(fields.latitude),
-    longitude: parseOptionalNumber(fields.longitude),
+    latitude: location.latitude,
+    longitude: location.longitude,
     city_region: String(fields.city_region || '').trim() || null,
+    location_status: location.location_status,
+    location_error: missingCoordinates ? 'Coordenadas ausentes no CSV' : (invalidCoordinates ? 'Coordenadas inválidas no CSV' : location.location_error),
     description: 'Criado automaticamente por importação histórica CSV.',
     status: 'ACTIVE',
     normal_level: null,
@@ -180,7 +193,13 @@ const importHistoricalCsv = async (req, userId) => {
       const measurementPayload = await syncPayloadService.getHistoricalMeasurementPayloadById(measurement.id);
       await syncEventService.createEntitySyncEvent('historical_measurement', measurementPayload);
     }
-    return { ok: true, import: historicalImport, data_point: dataPoint, job };
+    return {
+      ok: true,
+      warning: dataPoint.location_status === 'NEEDS_REVIEW' ? 'Ponto importado sem coordenadas válidas. Corrija a localização manualmente para exibir no mapa.' : null,
+      import: historicalImport,
+      data_point: dataPoint,
+      job
+    };
   } catch (error) {
     await pool.execute("UPDATE historical_imports SET status='FAILED', total_rows=?, imported_rows=?, failed_rows=?, error_message=?, completed_at=NOW() WHERE id=?", [totalRows, importedRows, failedRows, error.message, importId]);
     throw error;
