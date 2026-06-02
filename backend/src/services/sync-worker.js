@@ -1,5 +1,7 @@
 const repo = require('./cluster-node.repository');
 const coordinator = require('./sync-coordinator.service');
+const logger = require('../utils/logger');
+const { resolveNodeBaseUrl } = require('../utils/sync-targets');
 
 let timer = null;
 let running = false;
@@ -16,38 +18,54 @@ const canRetryNode = async (node) => {
 const runCycle = async () => {
   if (running) return { ok: true, skipped: true };
   running = true;
-  console.log('[sync] iniciando ciclo');
+  logger.debug('[sync] iniciando ciclo');
   try {
     const self = await repo.getSelfNode();
-    if (!self?.node_uuid) return { ok: true, message: 'self não configurado' };
+    if (!self?.node_uuid) return { ok: true, message: 'self não configurado', nodes: [] };
     const nodes = (await repo.getExternalNodes()).filter((node) => node.node_uuid && node.status === 'ONLINE' && (node.public_url || node.tailscale_ip));
     if (!nodes.length) {
-      console.log('[sync] nenhum nó externo online para sincronizar');
-      return { ok: true, nodes: 0 };
+      logger.debug('[sync] nenhum nó externo online para sincronizar');
+      return { ok: true, nodes: [] };
     }
     const results = [];
     for (const node of nodes) {
-      const base_url = coordinator.normalizeBaseUrl(node);
+      const resolved = resolveNodeBaseUrl(node, self);
+      const base_url = resolved.baseUrl;
+      const target_url = resolved.targetUrl;
       try {
+        if (!base_url) throw new Error('URL de destino não configurada');
+        if (resolved.matchedSelfUrl) logger.warn(`[sync] AVISO: destino calculado para ${node.node_name} parece ser o próprio servidor; usando fallback: ${base_url}`);
+        logger.debug(`[sync] node remoto ${node.node_name}: public_url=${node.public_url || '-'} tailscale_ip=${node.tailscale_ip || '-'} port=${node.port || 3000} target=${target_url}`);
+        logger.info(`[sync] target ${node.node_name} = ${target_url}`);
         if (!(await canRetryNode(node))) {
-          results.push({ node_uuid: node.node_uuid, skipped: true, reason: 'retry_cooldown' });
+          results.push({ node_uuid: node.node_uuid, node_name: node.node_name, target_url, skipped: true, reason: 'retry_cooldown' });
           continue;
         }
-        console.log(`[sync] puxando eventos de ${node.node_name}`);
+        logger.debug(`[sync] puxando eventos de ${node.node_name}`);
         const pulled = await coordinator.pullFromNode({ node_uuid: node.node_uuid, base_url });
-        console.log(`[sync] aplicados ${pulled.applied || 0} eventos de ${node.node_name}`);
-        console.log(`[sync] enviando eventos para ${node.node_name}`);
+        if (pulled.applied || pulled.failed) logger.info(`[sync] pull ${node.node_name}: received=${pulled.received || pulled.pulled || 0} applied=${pulled.applied || 0} skipped=${pulled.skipped || 0} failed=${pulled.failed || 0}`);
         const pushed = await coordinator.pushToNode({ node_uuid: node.node_uuid, base_url });
-        console.log(`[sync] enviando ${pushed.sent || 0} eventos para ${node.node_name}`);
         await coordinator.updateCursor(node.node_uuid, null, null, { nodeName: node.node_name });
-        results.push({ node_uuid: node.node_uuid, pulled, pushed });
+        results.push({
+          node_uuid: node.node_uuid,
+          node_name: node.node_name,
+          target_url,
+          pulled: pulled.pulled || 0,
+          sent: pushed.sent || 0,
+          attempted: pushed.attempted || pushed.sent || 0,
+          applied_by_remote: pushed.applied || 0,
+          skipped_by_remote: pushed.skipped || 0,
+          failed: pushed.failed || 0,
+          pending: pushed.pending || 0,
+          errors: pushed.errors || []
+        });
       } catch (error) {
-        console.error(`[sync] erro ao sincronizar com ${node.node_name}: ${error.message}`);
+        logger.error(`[sync] erro ao sincronizar com ${node.node_name}: ${error.message}`);
         await coordinator.updateCursor(node.node_uuid, null, error.message, { nodeName: node.node_name }).catch(() => {});
-        results.push({ node_uuid: node.node_uuid, error: error.message });
+        results.push({ node_uuid: node.node_uuid, node_name: node.node_name, target_url, error: error.message });
       }
     }
-    return { ok: true, results };
+    return { ok: true, nodes: results };
   } finally {
     running = false;
   }
@@ -55,7 +73,7 @@ const runCycle = async () => {
 
 const start = (intervalMs = 30000) => {
   if (timer) return;
-  timer = setInterval(() => runCycle().catch((error) => console.error('[sync] ciclo falhou:', error.message)), intervalMs);
+  timer = setInterval(() => runCycle().catch((error) => logger.error('[sync] ciclo falhou:', error.message)), intervalMs);
   timer.unref?.();
 };
 

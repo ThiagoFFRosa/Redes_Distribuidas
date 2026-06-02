@@ -50,7 +50,8 @@ const renderServers = (servers) => {
   serversBody.innerHTML = servers.map((server) => {
     const sync = syncStatusByNodeName.get(server.serverName) || {};
     const syncLabel = sync.last_error ? `Erro: ${sync.last_error}` : (Number(sync.pending_events || 0) > 0 ? `Pendente` : 'Sync OK');
-    return `<tr><td>${server.serverName}</td><td>${server.serverUrl}</td><td><span class="${server.online ? 'badge online' : 'badge offline'}">${server.online ? 'ONLINE' : 'OFFLINE'}</span></td><td><span class="${badgeClass(server)}">${server.role}</span></td><td>${server.publicUrl || '-'}</td><td>${formatLastSeen(server.lastSeen)}</td><td>${server.isHostingPublicFrontend ? '<span class="badge host">SIM</span>' : 'NÃO'}</td><td>${sync.last_sync_at ? formatLastSeen(sync.last_sync_at) : '-'}<br><small>${syncLabel}</small></td><td>${sync.pending_events ?? '-'}</td><td><button class="switch-btn" data-url="${server.serverUrl}" ${!server.online ? 'disabled' : ''}>Tornar HOST</button></td></tr>`;
+    const targetUrl = sync.target_url || '-';
+    return `<tr><td>${server.serverName}</td><td>${server.serverUrl}</td><td><span class="${server.online ? 'badge online' : 'badge offline'}">${server.online ? 'ONLINE' : 'OFFLINE'}</span></td><td><span class="${badgeClass(server)}">${server.role}</span></td><td>${server.publicUrl || '-'}</td><td>${formatLastSeen(server.lastSeen)}</td><td>${server.isHostingPublicFrontend ? '<span class="badge host">SIM</span>' : 'NÃO'}</td><td>${sync.last_sync_at ? formatLastSeen(sync.last_sync_at) : '-'}<br><small>${syncLabel}</small><br><small>${targetUrl}</small></td><td>${sync.pending_events ?? '-'}</td><td><button class="switch-btn" data-url="${server.serverUrl}" ${!server.online ? 'disabled' : ''}>Tornar HOST</button></td></tr>`;
   }).join('');
   document.querySelectorAll('.switch-btn').forEach((button) => button.addEventListener('click', async () => switchHost(button.dataset.url)));
 };
@@ -131,7 +132,7 @@ syncNowBtn.addEventListener('click', async () => {
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.message || 'Falha ao executar sync manual.');
     await loadServers(true);
-    showMessage('Sync manual concluído.');
+    showMessage(`Sync manual concluído: ${(data.nodes || []).map((node) => `${node.node_name}: sent=${node.sent || 0}, applied=${node.applied_by_remote || 0}, failed=${node.failed || 0}`).join(' | ') || 'sem nós'}.`);
   } catch (error) { showMessage(error.message || 'Erro no sync manual.', true); }
   finally { syncNowBtn.disabled = false; }
 });

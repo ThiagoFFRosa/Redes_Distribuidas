@@ -2,6 +2,7 @@ const pool = require('../database/connection');
 const { hashPayload } = require('./sync-event.service');
 const { runWithoutSyncEvents } = require('./sync-context.service');
 const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
+const logger = require('../utils/logger');
 
 const json = (value) => {
   if (typeof value === 'string') {
@@ -38,7 +39,7 @@ const upsertClusterNode = async (event, c) => {
   const p = event.payload || {};
   if (!p.node_uuid && !p.tailscale_ip) throw new Error('cluster_node sem node_uuid/tailscale_ip');
 
-  const [[self]] = await c.execute('SELECT id, node_uuid, tailscale_ip FROM cluster_nodes WHERE is_self=1 LIMIT 1');
+  const [[self]] = await c.execute('SELECT id, node_uuid, tailscale_ip, public_url, port, role, power_score FROM cluster_nodes WHERE is_self=1 LIMIT 1');
   const [[existingByUuid]] = p.node_uuid
     ? await c.execute('SELECT * FROM cluster_nodes WHERE node_uuid=? LIMIT 1', [p.node_uuid])
     : [[]];
@@ -56,7 +57,7 @@ const upsertClusterNode = async (event, c) => {
     node_uuid: p.node_uuid || existing?.node_uuid,
     node_name: p.node_name || existing?.node_name,
     tailscale_ip: p.tailscale_ip || existing?.tailscale_ip,
-    public_url: p.public_url ?? existing?.public_url ?? null,
+    public_url: isSelf ? (existing?.public_url ?? p.public_url ?? null) : (p.public_url ?? existing?.public_url ?? null),
     port: asInt(p.port, existing?.port ?? null),
     role: p.role || existing?.role || 'UNKNOWN',
     status: existing?.status || 'UNKNOWN',
@@ -104,6 +105,7 @@ const upsertDataPoint = async (event, c) => {
        description=VALUES(description), status=VALUES(status), normal_level=VALUES(normal_level), warning_level=VALUES(warning_level), critical_level=VALUES(critical_level), measurement_unit=VALUES(measurement_unit)`,
     [p.uuid, p.name, p.type || 'RIVER_LEVEL', p.latitude ?? null, p.longitude ?? null, p.city_region || null, p.description || null, p.status || 'ACTIVE', p.normal_level ?? null, p.warning_level ?? null, p.critical_level ?? null, p.measurement_unit || 'm']
   );
+  logger.info(`[sync-apply] data_point APPLIED uuid=${p.uuid} name=${p.name || '-'}`);
   return 'applied';
 };
 
@@ -185,6 +187,14 @@ const handlers = {
   chart_cache: upsertChartCache
 };
 
+const resultStatusFor = (result) => {
+  if (result.status === 'applied') return 'APPLIED';
+  if (result.status === 'skipped' && result.reason === 'duplicate') return 'SKIPPED_ALREADY_APPLIED';
+  if (result.status === 'skipped' && result.reason === 'older_than_local') return 'SKIPPED_OLDER_VERSION';
+  if (result.status === 'skipped') return 'SKIPPED_UNSUPPORTED';
+  return 'UNKNOWN';
+};
+
 const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(async () => {
   if (!event?.event_uuid) throw new Error('event_uuid obrigatório');
   const [[existing]] = await connection.execute('SELECT id FROM sync_applied_events WHERE event_uuid=? LIMIT 1', [event.event_uuid]);
@@ -204,20 +214,31 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
 const applySyncEvents = async (events = []) => {
   const safeEvents = Array.isArray(events) ? events : [];
   const connection = await pool.getConnection();
-  const summary = { ok: true, received: safeEvents.length, applied: 0, skipped: 0, failed: 0, errors: [] };
+  const summary = { ok: true, received: safeEvents.length, applied: 0, skipped: 0, failed: 0, results: [], errors: [] };
   try {
     for (const event of safeEvents) {
       try {
         await connection.beginTransaction();
         const result = await applySyncEvent(event, connection);
         await connection.commit();
-        if (result.status === 'applied') summary.applied += 1;
+        const status = resultStatusFor(result);
+        if (status === 'APPLIED') summary.applied += 1;
         else summary.skipped += 1;
+        summary.results.push({
+          event_uuid: event?.event_uuid || null,
+          entity_type: event?.entity_type || null,
+          entity_key: event?.entity_key || event?.payload?.uuid || event?.payload?.node_uuid || null,
+          status,
+          reason: result.reason || null
+        });
       } catch (error) {
         await connection.rollback().catch(() => {});
         summary.failed += 1;
-        summary.errors.push({ event_uuid: event?.event_uuid || null, entity_type: event?.entity_type || null, entity_key: event?.entity_key || null, message: error.message });
-        console.error('[sync] falha ao aplicar evento:', error.message);
+        const result = { event_uuid: event?.event_uuid || null, entity_type: event?.entity_type || null, entity_key: event?.entity_key || event?.payload?.uuid || event?.payload?.node_uuid || null, status: 'FAILED', message: error.message };
+        summary.results.push(result);
+        summary.errors.push(result);
+        if (event?.entity_type === 'data_point') logger.info(`[sync-apply] data_point FAILED uuid=${event?.payload?.uuid || event?.entity_key || '-'} reason=${error.message}`);
+        logger.error('[sync] falha ao aplicar evento:', error.message);
       }
     }
   } finally {

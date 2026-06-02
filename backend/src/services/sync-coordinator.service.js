@@ -3,12 +3,10 @@ const env = require('../config/env');
 const repo = require('./cluster-node.repository');
 const applyService = require('./sync-apply.service');
 const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
+const logger = require('../utils/logger');
+const { normalizeUrl, getNodeBaseUrl, resolveNodeBaseUrl, getNodeSyncTarget } = require('../utils/sync-targets');
 
-const normalizeBaseUrl = (node) => {
-  const raw = node?.base_url || node?.public_url || (node?.tailscale_ip ? `http://${node.tailscale_ip}:${node.port || env.port}` : '');
-  return String(raw || '').replace(/\/$/, '');
-};
-
+const normalizeBaseUrl = getNodeBaseUrl;
 
 const parseMetadata = (value) => {
   if (!value) return {};
@@ -25,15 +23,6 @@ const asInt = (value, fallback = null) => {
 const normalizeRole = (value) => (['HOST', 'STANDBY', 'UNKNOWN'].includes(value) ? value : 'UNKNOWN');
 const normalizeStatus = (value) => (['ONLINE', 'OFFLINE', 'UNKNOWN'].includes(value) ? value : 'UNKNOWN');
 
-const normalizeUrl = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (/^[\w.-]+\.(ngrok\.dev|ngrok-free\.app|dev)(:\d+)?(\/.*)?$/i.test(raw)) return `https://${raw}`;
-  if (/^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d+)?(\/.*)?$/i.test(raw)) return `http://${raw}`;
-  return `https://${raw}`;
-};
-
 const applyBootstrapNodes = async (nodes = []) => {
   const self = await repo.getSelfNode();
   for (const node of nodes) {
@@ -46,7 +35,7 @@ const applyBootstrapNodes = async (nodes = []) => {
       node_uuid: node.node_uuid || null,
       node_name: node.node_name,
       tailscale_ip: node.tailscale_ip,
-      public_url: normalizeUrl(node.public_url),
+      public_url: isSelf && self?.public_url ? self.public_url : normalizeUrl(node.public_url),
       port: asInt(node.port, env.port),
       role: normalizeRole(node.role),
       status: normalizeStatus(node.status),
@@ -123,12 +112,12 @@ const updateCursor = async (remoteNodeUuid, lastSeen, error = null, options = {}
       [remoteNodeUuid, lastSeenMysql, syncAt, error]
     );
     if (!error && lastSeen) {
-      console.log(`[sync] cursor atualizado para ${options.nodeName || remoteNodeUuid} em ${lastSeenMysql}`);
+      logger.debug(`[sync] cursor atualizado para ${options.nodeName || remoteNodeUuid} em ${lastSeenMysql}`);
     }
   } catch (cursorError) {
-    console.error(`[sync] erro ao atualizar cursor do node ${options.nodeName || remoteNodeUuid}`);
-    console.error(`[sync] valor recebido last_seen_event_created_at: ${lastSeen || null}`);
-    console.error(`[sync] valor convertido: ${lastSeenMysql}`);
+    logger.error(`[sync] erro ao atualizar cursor do node ${options.nodeName || remoteNodeUuid}`);
+    logger.error(`[sync] valor recebido last_seen_event_created_at: ${lastSeen || null}`);
+    logger.error(`[sync] valor convertido: ${lastSeenMysql}`);
     throw cursorError;
   }
 };
@@ -173,15 +162,6 @@ const countPendingEventsForNode = async (nodeUuid) => {
   return Number(row?.total || 0);
 };
 
-const markDeliveriesSent = async (nodeUuid, events) => {
-  for (const event of events) {
-    await pool.execute(
-      `UPDATE sync_event_deliveries SET status='SENT', last_error=NULL, sent_at=NOW() WHERE event_uuid=? AND target_node_uuid=?`,
-      [event.event_uuid, nodeUuid]
-    );
-  }
-};
-
 const markDeliveriesFailed = async (nodeUuid, events, error = null) => {
   for (const event of events) {
     await pool.execute(
@@ -203,30 +183,86 @@ const takeBatchWithinPayloadLimit = (events, maxEvents, maxPayloadBytes) => {
   const bytes = payloadBytes(batch);
   if (batch.length === 1 && bytes > maxPayloadBytes) {
     const event = batch[0];
-    console.warn(`[sync] aviso: evento único excede limite configurado entity=${event.entity_type} key=${event.entity_key} payload=${formatKb(bytes)}`);
+    logger.warn(`[sync] aviso: evento único excede limite configurado entity=${event.entity_type} key=${event.entity_key} payload=${formatKb(bytes)}`);
   }
   return { batch, bytes };
 };
 
+const SENT_RESULT_STATUSES = new Set(['APPLIED', 'SKIPPED_ALREADY_APPLIED', 'SKIPPED_OLDER_VERSION']);
+
+const normalizeResultStatus = (result) => String(result?.status || 'UNKNOWN').toUpperCase();
+
+const markDeliverySent = async (nodeUuid, eventUuid) => {
+  await pool.execute(
+    `UPDATE sync_event_deliveries SET status='SENT', last_error=NULL, sent_at=NOW() WHERE event_uuid=? AND target_node_uuid=?`,
+    [eventUuid, nodeUuid]
+  );
+};
+
+const markDeliveryErrored = async (nodeUuid, eventUuid, status, error = null) => {
+  await pool.execute(
+    `UPDATE sync_event_deliveries
+        SET attempts=attempts+1,
+            status=IF(attempts + 1 >= 5, 'FAILED', 'PENDING'),
+            last_error=?
+      WHERE event_uuid=? AND target_node_uuid=?`,
+    [String(error || status || 'erro ao aplicar no node remoto').slice(0, 1000), eventUuid, nodeUuid]
+  );
+};
+
+const markDeliveriesFromResults = async (nodeUuid, batch, results) => {
+  if (!Array.isArray(results)) return { markedSent: 0, markedFailed: 0, missingResults: batch.length };
+  const byEventUuid = new Map(results.filter((result) => result?.event_uuid).map((result) => [result.event_uuid, result]));
+  let markedSent = 0;
+  let markedFailed = 0;
+  let missingResults = 0;
+  for (const event of batch) {
+    const result = byEventUuid.get(event.event_uuid);
+    if (!result) {
+      missingResults += 1;
+      continue;
+    }
+    const status = normalizeResultStatus(result);
+    if (SENT_RESULT_STATUSES.has(status)) {
+      await markDeliverySent(nodeUuid, event.event_uuid);
+      markedSent += 1;
+    } else {
+      await markDeliveryErrored(nodeUuid, event.event_uuid, status, result.message || result.error || null);
+      markedFailed += 1;
+    }
+  }
+  return { markedSent, markedFailed, missingResults };
+};
+
 const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxBatches = env.syncMaxBatchesPerCycle } = {}) => {
   const node = node_uuid ? await repo.findByNodeUuid(node_uuid) : null;
+  const self = await repo.getSelfNode();
   const remoteUuid = node_uuid || node?.node_uuid;
   if (!remoteUuid) throw new Error('node_uuid obrigatório');
-  const baseUrl = String(base_url || normalizeBaseUrl(node)).replace(/\/$/, '');
+  const resolved = base_url
+    ? { baseUrl: String(base_url).replace(/\/+$/, ''), targetUrl: `${String(base_url).replace(/\/+$/, '')}/api/sync/apply`, matchedSelfUrl: false }
+    : resolveNodeBaseUrl(node, self);
+  const baseUrl = resolved.baseUrl;
+  if (!baseUrl) throw new Error(`URL de sync não calculada para ${node?.node_name || remoteUuid}`);
   const nodeName = node?.node_name || remoteUuid;
   const batchSize = Math.max(1, Math.min(Number(limit) || env.syncBatchSize, env.syncBatchSize));
   const batchLimit = Math.max(1, Number(maxBatches) || env.syncMaxBatchesPerCycle);
-  const destination = `${baseUrl}/api/sync/apply`;
+  const destination = resolved.targetUrl;
   let pendingCount = await countPendingEventsForNode(remoteUuid);
-  console.log(`[sync] preparando envio para ${nodeName}`);
-  console.log(`[sync] eventos pendentes: ${pendingCount}`);
-  console.log(`[sync] destino: ${destination}`);
-  if (!pendingCount) return { ok: true, sent: 0, applied: 0, skipped: 0, failed: 0, batches: 0, pending: 0 };
+  logger.debug(`[sync] node remoto ${nodeName}: public_url=${node?.public_url || '-'} tailscale_ip=${node?.tailscale_ip || '-'} port=${node?.port || 3000} target=${destination}`);
+  logger.debug(`[sync] target ${nodeName} = ${destination}`);
+  if (resolved.matchedSelfUrl) logger.warn(`[sync] AVISO: destino calculado para ${nodeName} parece ser o próprio servidor; usando fallback: ${baseUrl}`);
+  if (!pendingCount) {
+    logger.debug(`[sync] nenhum evento pendente para ${nodeName}`);
+    return { ok: true, target_url: destination, sent: 0, applied: 0, skipped: 0, failed: 0, received: 0, batches: 0, pending: 0 };
+  }
 
   let sent = 0;
+  let attempted = 0;
   let applied = 0;
   let skipped = 0;
   let failed = 0;
+  let received = 0;
   const errors = [];
   let batches = 0;
 
@@ -235,26 +271,33 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
     if (!events.length) break;
     const { batch, bytes } = takeBatchWithinPayloadLimit(events, batchSize, env.syncMaxPayloadBytes);
     if (!batch.length) break;
-    console.log(`[sync] lote: ${batch.length} eventos`);
-    console.log(`[sync] payload estimado: ${formatKb(bytes)}`);
-    console.log(`[sync] enviando ${batch.length} eventos para ${nodeName} payload=${formatKb(bytes)}`);
+    logger.debug(`[sync] enviando ${batch.length} eventos para ${nodeName} payload=${formatKb(bytes)}`);
     try {
       const data = await requestJson(destination, { method: 'POST', body: JSON.stringify({ events: batch }) });
-      await markDeliveriesSent(remoteUuid, batch);
       batches += 1;
-      sent += batch.length;
+      attempted += batch.length;
+      received += Number(data.received || 0);
       applied += Number(data.applied || 0);
       skipped += Number(data.skipped || 0);
       failed += Number(data.failed || 0);
       if (Array.isArray(data.errors)) errors.push(...data.errors);
-      console.log(`[sync] lote enviado com sucesso para ${nodeName}`);
+      const deliverySummary = await markDeliveriesFromResults(remoteUuid, batch, data.results);
+      sent += deliverySummary.markedSent;
+      if (deliverySummary.missingResults > 0) {
+        logger.warn('[sync] resposta do node não informou results; deliveries mantidas como PENDING');
+      }
+      if (Number(data.received || 0) > 0 && Number(data.applied || 0) === 0 && Number(data.skipped || 0) === 0) {
+        logger.warn(`[sync] ${nodeName}: received=${data.received} mas applied=0 e skipped=0; verifique o receptor`);
+      }
+      logger.info(`[sync] ${nodeName}: received=${Number(data.received || 0)} applied=${Number(data.applied || 0)} skipped=${Number(data.skipped || 0)} failed=${Number(data.failed || 0)}`);
+      if (Number(data.failed || 0) > 0 && data.errors?.length) logger.warn(`[sync] erros reportados por ${nodeName}:`, data.errors);
     } catch (error) {
       if (error.status === 413) {
-        console.error(`[sync] payload recusado pelo node ${nodeName}. Reduzindo batch size.`);
-        console.error(`[sync] erro 413: ${error.message}`);
+        logger.error(`[sync] payload recusado pelo node ${nodeName}. Reduzindo batch size.`);
+        logger.error(`[sync] erro 413: ${error.message}`);
       } else if (error.status >= 500) {
-        console.error(`[sync] erro ${error.status} ao enviar lote para ${nodeName}: ${error.message}`);
-        if (error.body && Object.keys(error.body).length) console.error('[sync] resposta do node:', error.body);
+        logger.error(`[sync] erro ${error.status} ao enviar lote para ${nodeName}: ${error.message}`);
+        if (error.body && Object.keys(error.body).length) logger.error('[sync] resposta do node:', error.body);
       }
       await markDeliveriesFailed(remoteUuid, batch, error.message);
       throw error;
@@ -262,8 +305,8 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
     pendingCount = await countPendingEventsForNode(remoteUuid);
   }
 
-  if (pendingCount > 0) console.log(`[sync] ainda existem eventos pendentes para ${nodeName}, continuar no próximo ciclo`);
-  return { ok: true, sent, applied, skipped, failed, errors, batches, pending: pendingCount };
+  if (pendingCount > 0) logger.info(`[sync] ainda existem eventos pendentes para ${nodeName}, continuar no próximo ciclo`);
+  return { ok: true, target_url: destination, sent, attempted, received, applied, skipped, failed, errors, batches, pending: pendingCount };
 };
 
 const fullBootstrap = async ({ host_url }) => {
@@ -294,9 +337,10 @@ const getStatus = async () => {
   for (const node of nodes) {
     const [[cursor]] = await pool.execute('SELECT * FROM sync_node_cursors WHERE remote_node_uuid=? LIMIT 1', [node.node_uuid]);
     const [[pending]] = await pool.execute("SELECT COUNT(*) AS total FROM sync_event_deliveries WHERE target_node_uuid=? AND status='PENDING'", [node.node_uuid]);
-    result.push({ node_uuid: node.node_uuid, node_name: node.node_name, status: node.status, last_sync_at: cursor?.last_sync_at || null, pending_events: Number(pending?.total || 0), last_error: cursor?.last_error || null });
+    const resolved = resolveNodeBaseUrl(node, self);
+    result.push({ node_uuid: node.node_uuid, node_name: node.node_name, target_url: resolved.targetUrl || getNodeSyncTarget(node), status: node.status, last_sync_at: cursor?.last_sync_at || null, pending_events: Number(pending?.total || 0), last_error: cursor?.last_error || null });
   }
   return { ok: true, self, nodes: result };
 };
 
-module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, getStatus, updateCursor, getCursor, normalizeBaseUrl };
+module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, getStatus, updateCursor, getCursor, normalizeBaseUrl, getNodeBaseUrl, getNodeSyncTarget };

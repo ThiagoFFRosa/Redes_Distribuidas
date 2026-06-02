@@ -231,17 +231,22 @@
                         </div>
                         <div class="flex gap-2">
                         <button id="add-server-btn" class="bg-secondary hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-sm font-medium">Adicionar servidor</button>
+                        <button id="sync-now-btn" class="bg-secondary hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 whitespace-nowrap">Sincronizar agora</button>
                         <button id="refresh-health-btn" class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Atualizar Status</button>
                         </div>
                     </div>
                     <div class="overflow-x-auto w-full">
-                        <table class="w-full text-left border-collapse min-w-[700px]">
+                        <table class="w-full text-left border-collapse min-w-[1100px]">
                             <thead>
                                 <tr class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider border-b border-slate-200">
                                     <th class="p-4 font-medium">Nome do Servidor</th>
                                     <th class="p-4 font-medium">IP (Tailscale)</th>
                                     <th class="p-4 font-medium">Função</th>
                                     <th class="p-4 font-medium">Status</th>
+                                    <th class="p-4 font-medium">Public URL</th>
+                                    <th class="p-4 font-medium">Porta</th>
+                                    <th class="p-4 font-medium">Sync target</th>
+                                    <th class="p-4 font-medium">Pendentes</th>
                                     <th class="p-4 font-medium">Potência</th>
                                     <th class="p-4 font-medium text-right">Ações</th>
                                 </tr>

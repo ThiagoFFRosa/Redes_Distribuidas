@@ -4,6 +4,7 @@ const repo = require('../services/cluster-node.repository');
 const healthService = require('../services/cluster-health.service');
 const { requireAuth } = require('../services/auth.service');
 const env = require('../config/env');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 const ROLES = ['HOST', 'STANDBY', 'UNKNOWN'];
@@ -104,7 +105,7 @@ const applyBootstrapNodes = async (nodes = []) => {
       node_uuid: rawNode.node_uuid || null,
       node_name: rawNode.node_name,
       tailscale_ip: rawNode.tailscale_ip,
-      public_url: normalizeNodePublicUrl(rawNode),
+      public_url: sameAsSelf && self?.public_url ? self.public_url : normalizeNodePublicUrl(rawNode),
       port: normalizePort(rawNode.port) || env.port,
       role: ROLES.includes(rawNode.role) ? rawNode.role : 'UNKNOWN',
       status: STATUSES.includes(rawNode.status) ? rawNode.status : 'UNKNOWN',
@@ -124,13 +125,13 @@ router.post('/join-request', async (req, res) => {
     const requesterIp = req.ip || req.socket?.remoteAddress || 'desconhecido';
     const { node_uuid, node_name, tailscale_ip, public_url, port, requested_role, power_score, session_secret, metadata } = req.body || {};
 
-    console.log(`[join-request] solicitação recebida do servidor ${String(node_name || '').trim() || 'desconhecido'} / ${String(tailscale_ip || '').trim() || 'desconhecido'}`);
-    console.log(`[join-request] HTTP remote address: ${requesterIp}`);
+    logger.info(`[join-request] solicitação recebida do servidor ${String(node_name || '').trim() || 'desconhecido'} / ${String(tailscale_ip || '').trim() || 'desconhecido'}`);
+    logger.info(`[join-request] HTTP remote address: ${requesterIp}`);
 
     if (!env.sessionSecret) return res.status(500).json({ ok: false, message: 'SESSION_SECRET não configurado no host.' });
 
     if (session_secret !== env.sessionSecret) {
-      console.warn('[join-request] secret inválido');
+      logger.warn('[join-request] secret inválido');
       return res.status(403).json({ ok: false, message: 'Secret inválido.' });
     }
     if (!String(node_name || '').trim() || !String(tailscale_ip || '').trim()) return res.status(400).json({ ok: false, message: 'node_name e tailscale_ip são obrigatórios.' });
@@ -172,7 +173,7 @@ router.post('/join-request', async (req, res) => {
       ? await repo.updateJoinRequest(pending.id, payload)
       : await repo.createJoinRequest(payload);
 
-    console.log(`[join-request] solicitação registrada como PENDING id=${savedRequest.id}`);
+    logger.info(`[join-request] solicitação registrada como PENDING id=${savedRequest.id}`);
     return res.json({ ok: true, status: 'PENDING', message: 'Solicitação enviada. Aguardando aprovação no host.' });
   } catch (error) {
     if (handleSchemaNotMigrated(error, res)) return;
@@ -227,7 +228,8 @@ router.get('/join-requests', async (req, res) => {
   const status = String(req.query.status || '').toUpperCase();
   const filterStatus = JOIN_STATUSES.includes(status) ? status : null;
   const requests = await repo.listJoinRequests(filterStatus);
-  console.log(`[join-requests] listando solicitações status=${filterStatus || 'ALL'} total=${requests.length}`);
+  const message = `[join-requests] listando solicitações status=${filterStatus || 'ALL'} total=${requests.length}`;
+  if (requests.length === 0) logger.debug(message); else logger.info(message);
   res.json({ ok: true, data: requests });
 });
 
@@ -255,9 +257,9 @@ router.post('/join-requests/:id/approve', async (req, res) => {
     healthcheck_error: null,
     metadata: parseMetadata(request.requester_metadata)
   }, { reason: 'join-approve' });
-  console.log('[join-request] servidor salvo em cluster_nodes');
+  logger.info('[join-request] servidor salvo em cluster_nodes');
   await repo.approveJoinRequest(id, node.id);
-  console.log('[join-request] solicitação aprovada');
+  logger.info('[join-request] solicitação aprovada');
   res.json({ ok: true, node: serializeClusterNode(node) });
 });
 
@@ -278,9 +280,9 @@ router.post('/request-join-host', async (req, res) => {
   const normalizedHostUrl = normalizeUrl(host_url);
   if (!normalizedHostUrl) return res.status(400).json({ ok: false, message: 'host_url inválida.' });
 
-  console.log(`[request-join-host] self node carregado: ${self.node_name} / ${self.tailscale_ip}`);
+  logger.info(`[request-join-host] self node carregado: ${self.node_name} / ${self.tailscale_ip}`);
   const url = `${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/join-request`;
-  console.log(`[request-join-host] enviando solicitação para ${normalizedHostUrl}`);
+  logger.info(`[request-join-host] enviando solicitação para ${normalizedHostUrl}`);
 
   const payload = {
     node_name: String(self.node_name).trim(),
@@ -304,7 +306,7 @@ router.post('/request-join-host', async (req, res) => {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return res.status(response.status).json(data);
 
-    console.log(`[request-join-host] resposta do host: ${data.status || (data.already_registered ? 'ALREADY_REGISTERED' : 'UNKNOWN')}`);
+    logger.info(`[request-join-host] resposta do host: ${data.status || (data.already_registered ? 'ALREADY_REGISTERED' : 'UNKNOWN')}`);
 
     if (data.already_registered || data.status === 'APPROVED') {
       const bootstrapResp = await fetch(`${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/bootstrap`, { headers: { 'X-Cluster-Secret': env.sessionSecret } });
@@ -316,7 +318,7 @@ router.post('/request-join-host', async (req, res) => {
 
     return res.json(data);
   } catch (error) {
-    console.error(`[request-join-host] erro ao conectar no host: ${error.message}`);
+    logger.error(`[request-join-host] erro ao conectar no host: ${error.message}`);
     return res.status(502).json({ ok: false, message: 'Falha ao conectar no host informado.' });
   }
 });
