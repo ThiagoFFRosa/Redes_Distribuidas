@@ -3,6 +3,7 @@ const db = require('../database/connection');
 const syncEventService = require('./sync-event.service');
 const syncPayloadService = require('./sync-payload.service');
 const { toMysqlDateTime } = require('../utils/mysql-date');
+const logger = require('../utils/logger');
 
 const asNumber = (value, fallback = null) => {
   if (value === undefined || value === null || value === '') return fallback;
@@ -133,7 +134,7 @@ class ClusterNodeRepository {
       node_uuid: data.node_uuid || existing?.node_uuid || crypto.randomUUID(),
       node_name: data.node_name || existing?.node_name,
       tailscale_ip: data.tailscale_ip || existing?.tailscale_ip,
-      public_url: data.public_url ?? existing?.public_url ?? null,
+      public_url: matchesLocalSelf ? (existing?.public_url ?? data.public_url ?? null) : (data.public_url ?? existing?.public_url ?? null),
       port: asNumber(data.port, existing?.port ?? null),
       role: data.role || existing?.role || 'UNKNOWN',
       status: data.status || existing?.status || 'UNKNOWN',
@@ -235,8 +236,8 @@ class ClusterNodeRepository {
     [payload.status, payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, id]);
     const node = await this.findById(id);
     const reason = options.reason || 'healthcheck';
-    if (reason === 'heartbeat') console.log('[heartbeat] self marcado ONLINE sem gerar sync_event');
-    else console.log(`[${reason}] status atualizado para ${node.node_name} sem gerar sync_event`);
+    if (reason === 'heartbeat') logger.debug('[heartbeat] self marcado ONLINE sem gerar sync_event');
+    else logger.debug(`[${reason}] status atualizado para ${node.node_name} sem gerar sync_event`);
     return node;
   }
 

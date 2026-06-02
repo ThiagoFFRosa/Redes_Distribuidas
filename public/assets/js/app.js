@@ -13,7 +13,9 @@ document.addEventListener('DOMContentLoaded', () => {
         fila: [],
         historicalChart: null,
         currentHistoricalPointId: null,
-        joinRequests: []
+        joinRequests: [],
+        syncStatusByUuid: new Map(),
+        syncStatusByName: new Map()
     };
 
     const authHeaders = () => {
@@ -528,8 +530,13 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 closeSelfModal();
             }
-            const nodesData = await apiFetch('/api/cluster/nodes');
+            const [nodesData, syncData] = await Promise.all([
+                apiFetch('/api/cluster/nodes'),
+                apiFetch('/api/sync/status').catch(() => ({ nodes: [] }))
+            ]);
             state.servidores = nodesData.nodes || [];
+            state.syncStatusByUuid = new Map((syncData.nodes || []).map((node) => [node.node_uuid, node]));
+            state.syncStatusByName = new Map((syncData.nodes || []).map((node) => [node.node_name, node]));
         } catch (error) {
             if (error.status === 401) { window.location.href = '/login'; return; }
             throw error;
@@ -546,12 +553,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const isOnline = s.status === 'ONLINE';
             const roleBadge = `<span class="px-2.5 py-1 text-xs font-semibold rounded-md bg-slate-100 text-slate-700">${s.role}</span>`;
             const statusInd = `<div class="flex items-center gap-1.5 text-sm font-medium ${isOnline ? 'text-green-600':'text-red-600'}"><span class="w-2 h-2 rounded-full ${isOnline ? 'bg-green-500':'bg-red-500'}"></span>${s.status}</div>`;
+            const sync = state.syncStatusByUuid.get(s.node_uuid) || state.syncStatusByName.get(s.node_name) || {};
+            const targetUrl = sync.target_url || (s.public_url ? `${String(s.public_url).replace(/\/$/, '')}/api/sync/apply` : (s.tailscale_ip ? `http://${s.tailscale_ip}:${s.port || 3000}/api/sync/apply` : '-'));
             tbody.innerHTML += `
                 <tr class="hover:bg-slate-50 transition-colors">
-                    <td class="p-4 font-semibold text-dark">${s.node_name}${s.is_self ? ' (Este servidor)' : ''}</td>
-                    <td class="p-4 text-sm font-mono text-slate-600">${s.tailscale_ip}</td>
+                    <td class="p-4 font-semibold text-dark">${escapeHtml(s.node_name || '-')}${s.is_self ? ' (Este servidor)' : ''}</td>
+                    <td class="p-4 text-sm font-mono text-slate-600">${escapeHtml(s.tailscale_ip || '-')}</td>
                     <td class="p-4">${roleBadge}</td>
                     <td class="p-4">${statusInd}</td>
+                    <td class="p-4 text-xs font-mono text-slate-600">${escapeHtml(s.public_url || '-')}</td>
+                    <td class="p-4 text-sm font-mono">${s.port || 3000}</td>
+                    <td class="p-4 text-xs font-mono text-slate-600 max-w-xs break-all">${escapeHtml(targetUrl)}</td>
+                    <td class="p-4 text-sm">${sync.pending_events ?? (s.is_self ? '-' : '0')}</td>
                     <td class="p-4"><span class="font-mono">${s.power_score ?? 5}/10</span></td>
                     <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button>' : ''}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
                 </tr>`;
@@ -601,10 +614,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const loadJoinRequests = async () => {
-        console.log('[join-requests] carregando pendentes...');
         try {
             const data = await apiFetch('/api/cluster/join-requests?status=PENDING');
-            console.log('[join-requests] resposta:', data);
             state.joinRequests = Array.isArray(data.data)
                 ? data.data.filter((request) => request.status === 'PENDING')
                 : [];
@@ -694,6 +705,29 @@ document.addEventListener('DOMContentLoaded', () => {
         await fetchClusterNodes();
         renderServidores();
         initCards();
+    });
+
+    document.getElementById('sync-now-btn')?.addEventListener('click', async (event) => {
+        const btn = event.currentTarget;
+        btn.disabled = true;
+        btn.textContent = 'Sincronizando...';
+        try {
+            const data = await apiFetch('/api/sync/run-now', { method: 'POST', body: JSON.stringify({}) });
+            const totals = (data.nodes || []).reduce((acc, node) => {
+                acc.sent += Number(node.sent || 0);
+                acc.applied += Number(node.applied_by_remote || 0);
+                acc.failed += Number(node.failed || 0);
+                return acc;
+            }, { sent: 0, applied: 0, failed: 0 });
+            await fetchClusterNodes();
+            renderServidores();
+            setFeedback('join-requests-feedback', `Sync concluído: enviados=${totals.sent} applied=${totals.applied} failed=${totals.failed}`, totals.failed > 0);
+        } catch (error) {
+            setFeedback('join-requests-feedback', `Erro ao sincronizar: ${error.message}`, true);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Sincronizar agora';
+        }
     });
 
     document.getElementById('add-server-btn')?.addEventListener('click', openAddModal);
