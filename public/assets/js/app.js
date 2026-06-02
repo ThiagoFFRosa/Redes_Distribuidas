@@ -215,20 +215,68 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('historical-modal')?.classList.remove('flex');
     };
 
+    const isValidChartPayload = (payload) => Boolean(
+        payload
+        && Array.isArray(payload.labels)
+        && Array.isArray(payload.datasets)
+        && payload.datasets.length > 0
+        && Array.isArray(payload.datasets[0].data)
+    );
+
+    const normalizeChartPayload = (payload) => {
+        if (!payload) return null;
+        if (Array.isArray(payload.datasets)) return payload;
+        if (Array.isArray(payload.labels) && Array.isArray(payload.values)) return {
+            ...payload,
+            datasets: [{ label: `Cota histórica (${payload.unit || 'm'})`, data: payload.values }]
+        };
+        return payload;
+    };
+
+    const setHistoricalCanvasVisible = (visible, message = '') => {
+        const canvas = document.getElementById('historical-chart');
+        const container = canvas?.parentElement;
+        if (!canvas || !container) return;
+        let empty = document.getElementById('historical-chart-empty');
+        if (!empty) {
+            empty = document.createElement('div');
+            empty.id = 'historical-chart-empty';
+            empty.className = 'hidden h-full min-h-[320px] rounded-lg bg-slate-50 border border-dashed border-slate-200 flex items-center justify-center p-6 text-slate-500 text-center';
+            container.appendChild(empty);
+        }
+        if (visible) {
+            empty.classList.add('hidden');
+            canvas.classList.remove('hidden');
+        } else {
+            empty.textContent = message || 'Dados ainda não disponíveis.';
+            empty.classList.remove('hidden');
+            canvas.classList.add('hidden');
+        }
+    };
+
     const renderHistoricalChart = (payload) => {
         const canvas = document.getElementById('historical-chart');
         if (!canvas) return;
         if (state.historicalChart) state.historicalChart.destroy();
+        const normalized = normalizeChartPayload(payload);
+        const datasets = (normalized?.datasets || []).map((dataset) => ({
+            ...dataset,
+            borderColor: dataset.borderColor || '#0d9488',
+            backgroundColor: dataset.backgroundColor || 'rgba(13,148,136,0.12)',
+            fill: dataset.fill ?? true,
+            tension: dataset.tension ?? 0.25,
+            pointRadius: dataset.pointRadius ?? 0
+        }));
         state.historicalChart = new Chart(canvas, {
             type: 'line',
-            data: { labels: payload?.labels || [], datasets: [{ label: `Cota histórica (${payload?.unit || 'm'})`, data: payload?.values || [], borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,0.12)', fill: true, tension: 0.25, pointRadius: 0 }] },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } }, scales: { y: { title: { display: true, text: payload?.unit || 'm' } } } }
+            data: { labels: normalized?.labels || [], datasets },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } }, scales: { y: { title: { display: true, text: normalized?.unit || 'm' } } } }
         });
     };
 
     const scheduleHistoricalPolling = (pointId, status) => {
         stopHistoricalPolling();
-        if (!['PENDING', 'PROCESSING'].includes(status)) return;
+        if (!['PENDING', 'PROCESSING', 'WAITING_CACHE_SYNC'].includes(status)) return;
         state.historicalPollTimer = setTimeout(async () => {
             if (String(state.currentHistoricalPointId) !== String(pointId)) return;
             try { await loadHistoricalChart(pointId); }
@@ -236,25 +284,46 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 2500);
     };
 
+    const renderHistoricalSummary = (summary = {}, status = 'PROCESSING', hasCache = false) => {
+        const waiting = ['PROCESSING', 'WAITING_CACHE_SYNC'].includes(status) && !hasCache;
+        const period = waiting ? 'Dados ainda não disponíveis' : `${summary.date_start || '-'} a ${summary.date_end || '-'}`;
+        document.getElementById('historical-summary').innerHTML = `
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Período</span><strong>${escapeHtml(period)}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Medições</span><strong>${waiting ? 'Aguardando cache' : (summary.points_count ?? summary.total_measurements ?? '-')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Mínimo</span><strong>${waiting ? '-' : formatMetric(summary.min ?? summary.min_value, 'm')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Máximo</span><strong>${waiting ? '-' : formatMetric(summary.max ?? summary.max_value, 'm')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Média</span><strong>${waiting ? '-' : formatMetric(summary.avg ?? summary.average_value, 'm')}</strong></div>
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Tendência</span><strong>${waiting ? '-' : escapeHtml(trendLabel(summary.trend))}</strong></div>`;
+    };
+
     const loadHistoricalChart = async (pointId) => {
         const data = await apiFetch(`/api/data-points/${pointId}/historical-chart`);
         const point = data.data_point || state.pontos.find((p) => String(p.id) === String(pointId));
+        const status = data.status || data.job?.status || 'PROCESSING';
         const cache = data.cache?.available ? data.cache : data.chart;
-        const payload = cache?.data || cache?.payload;
+        const payload = normalizeChartPayload(cache?.data || cache?.payload);
         const summary = cache?.summary || {};
         document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
-        document.getElementById('historical-message').textContent = data.message || (data.status === 'READY' ? 'Gráfico pronto.' : '');
-        document.getElementById('historical-summary').innerHTML = `
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Período</span><strong>${escapeHtml(summary.date_start || '-')} a ${escapeHtml(summary.date_end || '-')}</strong></div>
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Medições</span><strong>${summary.total_measurements ?? '-'}</strong></div>
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Mínimo</span><strong>${formatMetric(summary.min_value, 'm')}</strong></div>
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Máximo</span><strong>${formatMetric(summary.max_value, 'm')}</strong></div>
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Média</span><strong>${formatMetric(summary.average_value, 'm')}</strong></div>
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Tendência</span><strong>${escapeHtml(trendLabel(summary.trend))}</strong></div>`;
-        document.getElementById('historical-job').innerHTML = data.job ? `Processando em: <strong>${escapeHtml(data.job.assigned_to || data.job.assigned_node_name || '-')}</strong> · Status: <strong>${escapeHtml(data.job.status || data.status || '-')}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : '';
-        if (payload) renderHistoricalChart(payload);
-        else renderHistoricalChart({ labels: [], values: [], unit: 'm' });
-        scheduleHistoricalPolling(pointId, data.status || data.job?.status);
+        document.getElementById('historical-message').textContent = data.message || '';
+        const hasRenderableCache = isValidChartPayload(payload);
+        renderHistoricalSummary(summary, status, hasRenderableCache);
+        document.getElementById('historical-job').innerHTML = data.job ? `Node: <strong>${escapeHtml(data.job.assigned_to || data.job.assigned_node_name || '-')}</strong> · Status do job: <strong>${escapeHtml(data.job.status || '-')}</strong> · Status do cache: <strong>${escapeHtml(status)}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : `Status do cache: <strong>${escapeHtml(status)}</strong>`;
+
+        if ((status === 'READY' || status === 'PROCESSING') && hasRenderableCache) {
+            setHistoricalCanvasVisible(true);
+            renderHistoricalChart(payload);
+        } else {
+            if (state.historicalChart) { state.historicalChart.destroy(); state.historicalChart = null; }
+            const emptyMessage = status === 'NO_DATA'
+                ? 'Este ponto ainda não possui dados históricos/medições.'
+                : status === 'FAILED'
+                    ? (data.message || 'Falha ao gerar gráfico histórico.')
+                    : status === 'WAITING_CACHE_SYNC'
+                        ? (data.message || 'Gráfico gerado no node responsável. Aguardando cache chegar neste servidor.')
+                        : 'Processando / aguardando cache do gráfico.';
+            setHistoricalCanvasVisible(false, emptyMessage);
+        }
+        scheduleHistoricalPolling(pointId, status);
     };
 
     const openHistoricalModal = async (point) => {
