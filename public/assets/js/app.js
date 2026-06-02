@@ -299,17 +299,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadHistoricalChart = async (pointId) => {
         const data = await apiFetch(`/api/data-points/${pointId}/historical-chart`);
         const point = data.data_point || state.pontos.find((p) => String(p.id) === String(pointId));
-        const status = data.status || data.job?.status || 'PROCESSING';
+        const responseStatus = data.status || data.job?.status || 'PROCESSING';
         const cache = data.cache?.available ? data.cache : data.chart;
         const payload = normalizeChartPayload(cache?.data || cache?.payload);
         const summary = cache?.summary || {};
-        document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
-        document.getElementById('historical-message').textContent = data.message || '';
         const hasRenderableCache = isValidChartPayload(payload);
+        const status = hasRenderableCache && data.cache?.available ? 'READY' : responseStatus;
+        document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
+        document.getElementById('historical-message').textContent = status === 'READY' && responseStatus === 'WAITING_CACHE_SYNC'
+            ? 'Cache local disponível. Gráfico pronto.'
+            : (data.message || '');
         renderHistoricalSummary(summary, status, hasRenderableCache);
         document.getElementById('historical-job').innerHTML = data.job ? `Node: <strong>${escapeHtml(data.job.assigned_to || data.job.assigned_node_name || '-')}</strong> · Status do job: <strong>${escapeHtml(data.job.status || '-')}</strong> · Status do cache: <strong>${escapeHtml(status)}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : `Status do cache: <strong>${escapeHtml(status)}</strong>`;
 
-        if ((status === 'READY' || status === 'PROCESSING') && hasRenderableCache) {
+        if (status === 'READY' && hasRenderableCache) {
             setHistoricalCanvasVisible(true);
             renderHistoricalChart(payload);
         } else {
@@ -318,9 +321,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? 'Este ponto ainda não possui dados históricos/medições.'
                 : status === 'FAILED'
                     ? (data.message || 'Falha ao gerar gráfico histórico.')
-                    : status === 'WAITING_CACHE_SYNC'
-                        ? (data.message || 'Gráfico gerado no node responsável. Aguardando cache chegar neste servidor.')
-                        : 'Processando / aguardando cache do gráfico.';
+                    : status === 'CACHE_MISSING_LOCAL'
+                        ? (data.message || 'Job local concluído, mas chart_cache não foi encontrado.')
+                        : status === 'WAITING_CACHE_SYNC'
+                            ? (data.message || 'Gráfico gerado no node responsável. Aguardando cache chegar neste servidor.')
+                            : 'Processando / aguardando cache do gráfico.';
             setHistoricalCanvasVisible(false, emptyMessage);
         }
         scheduleHistoricalPolling(pointId, status);
