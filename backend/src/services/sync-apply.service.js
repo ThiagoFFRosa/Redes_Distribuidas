@@ -100,11 +100,11 @@ const upsertDataPoint = async (event, c) => {
   if (!p.uuid) throw new Error('data_point sem uuid');
   if (await shouldSkipOlder(c, 'data_points', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
-    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, description, status, normal_level, warning_level, critical_level, measurement_unit)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), latitude=VALUES(latitude), longitude=VALUES(longitude), city_region=VALUES(city_region),
-       description=VALUES(description), status=VALUES(status), normal_level=VALUES(normal_level), warning_level=VALUES(warning_level), critical_level=VALUES(critical_level), measurement_unit=VALUES(measurement_unit)`,
-    [p.uuid, p.name, p.type || 'RIVER_LEVEL', p.latitude ?? null, p.longitude ?? null, p.city_region || null, p.description || null, p.status || 'ACTIVE', p.normal_level ?? null, p.warning_level ?? null, p.critical_level ?? null, p.measurement_unit || 'm']
+       location_status=VALUES(location_status), location_error=VALUES(location_error), description=VALUES(description), status=VALUES(status), normal_level=VALUES(normal_level), warning_level=VALUES(warning_level), critical_level=VALUES(critical_level), measurement_unit=VALUES(measurement_unit)`,
+    [p.uuid, p.name, p.type || 'RIVER_LEVEL', p.latitude ?? null, p.longitude ?? null, p.city_region || null, p.location_status || ((p.latitude == null || p.longitude == null) ? 'NEEDS_REVIEW' : 'VALID'), p.location_error || null, p.description || null, p.status || 'ACTIVE', p.normal_level ?? null, p.warning_level ?? null, p.critical_level ?? null, p.measurement_unit || 'm']
   );
   logger.info(`[sync-apply] data_point APPLIED uuid=${p.uuid} name=${p.name || '-'}`);
   return 'applied';

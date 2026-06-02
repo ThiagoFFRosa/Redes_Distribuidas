@@ -45,6 +45,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
     const moneyNumber = (value) => Number(value || 0).toFixed(2);
     const hasValue = (value) => value !== null && value !== undefined && value !== '';
+    const isValidLatitude = (value) => { const n = Number(value); return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(n) && n >= -90 && n <= 90; };
+    const isValidLongitude = (value) => { const n = Number(value); return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(n) && n >= -180 && n <= 180; };
+    const hasValidCoordinates = (point = {}) => isValidLatitude(point.latitude) && isValidLongitude(point.longitude);
+    const parseOptionalCoordinate = (value) => value === null || value === undefined || String(value).trim() === '' ? null : Number(value);
     const formatLevel = (value, unit = 'm') => hasValue(value) ? `${Number(value).toFixed(2)}${escapeHtml(unit || 'm')}` : 'Não configurado';
     const dateLabel = (value) => value ? new Date(value).toLocaleString('pt-BR') : '-';
     const setFeedback = (id, message, isError = false) => {
@@ -138,12 +142,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderMapPoints = () => {
         if (!map) return;
         clearPointMarkers();
+        const statusEl = document.getElementById('map-location-warning');
+        const validMapPoints = state.pontos.filter(hasValidCoordinates);
         state.pontos.forEach((p) => {
-            if (!Number.isFinite(Number(p.latitude)) || !Number.isFinite(Number(p.longitude))) return;
-            const m = L.circleMarker([p.latitude, p.longitude], { radius: 8, fillColor: p.status === 'ACTIVE' ? '#0284c7' : '#94a3b8', color: '#fff', weight: 2, opacity: p.status === 'ACTIVE' ? 1 : 0.75, fillOpacity: p.status === 'ACTIVE' ? 0.85 : 0.45 }).addTo(map);
+            if (!hasValidCoordinates(p) && window.location.hostname === 'localhost') console.warn('Ponto ignorado no mapa por coordenadas inválidas:', p);
+        });
+        validMapPoints.forEach((p) => {
+            const lat = Number(p.latitude);
+            const lng = Number(p.longitude);
+            const m = L.circleMarker([lat, lng], { radius: 8, fillColor: p.status === 'ACTIVE' ? '#0284c7' : '#94a3b8', color: '#fff', weight: 2, opacity: p.status === 'ACTIVE' ? 1 : 0.75, fillOpacity: p.status === 'ACTIVE' ? 0.85 : 0.45 }).addTo(map);
             m.bindPopup(`<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.city_region || '')}<br>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}<br>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}<br>Status: ${escapeHtml(p.status)}`);
             pointMarkers.push(m);
         });
+        if (validMapPoints.length > 0) {
+            if (statusEl) statusEl.textContent = '';
+        } else {
+            map.setView([-23.5505, -46.6333], 7);
+            if (statusEl) statusEl.textContent = 'Nenhum ponto com coordenadas válidas para exibir no mapa.';
+        }
     };
 
     const initMap = () => {
@@ -169,15 +185,17 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         state.pontos.forEach(p => {
+            const validLocation = hasValidCoordinates(p);
             const badge = p.status === 'ACTIVE' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600';
+            const reviewBadge = !validLocation || p.location_status === 'NEEDS_REVIEW' ? '<span class="ml-2 px-2 py-1 rounded bg-yellow-100 text-yellow-800 text-[11px] font-semibold">Corrigir localização</span>' : '';
             tbody.innerHTML += `
                 <tr class="hover:bg-slate-50">
                     <td class="p-4"><div class="font-medium text-dark">${escapeHtml(p.name)}</div><div class="text-xs text-slate-500">ID: ${p.id}</div></td>
-                    <td class="p-4 text-slate-600">${escapeHtml(p.city_region || '-')}</td>
-                    <td class="p-4 text-xs font-mono text-slate-500">${Number.isFinite(Number(p.latitude)) && Number.isFinite(Number(p.longitude)) ? `${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}` : 'Sem localização'}</td>
-                    <td class="p-4"><span class="px-2 py-1 rounded ${badge} text-xs font-semibold text-center inline-block w-20">${escapeHtml(p.status)}</span></td>
+                    <td class="p-4 text-slate-600">${validLocation ? escapeHtml(p.city_region || '-') : `<span class="text-yellow-700 font-medium">Sem coordenadas — Corrigir</span><div class="text-xs text-slate-500">${escapeHtml(p.location_error || 'Localização pendente')}</div>`}</td>
+                    <td class="p-4 text-xs font-mono text-slate-500">${validLocation ? `${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}` : '-'}</td>
+                    <td class="p-4"><span class="px-2 py-1 rounded ${badge} text-xs font-semibold text-center inline-block w-20">${escapeHtml(p.status)}</span>${reviewBadge}</td>
                     <td class="p-4 text-xs text-slate-600"><div>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}</div><div>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}</div></td>
-                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="historical-point" data-id="${p.id}" class="px-2 py-1 border rounded text-secondary hover:bg-teal-50">Histórico</button><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">Editar</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
+                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="historical-point" data-id="${p.id}" class="px-2 py-1 border rounded text-secondary hover:bg-teal-50">Histórico</button><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">${validLocation ? 'Editar' : 'Corrigir localização'}</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
                 </tr>`;
         });
     };
@@ -278,7 +296,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const validatePointFormPayload = (payload) => {
         if (!payload.name) return 'Nome do ponto é obrigatório.';
-        if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) return 'Latitude e longitude são obrigatórias.';
+        if (payload.latitude !== null && !isValidLatitude(payload.latitude)) return 'Latitude inválida. Use um número entre -90 e 90.';
+        if (payload.longitude !== null && !isValidLongitude(payload.longitude)) return 'Longitude inválida. Use um número entre -180 e 180.';
         const levels = [payload.normal_level, payload.warning_level, payload.critical_level];
         if (levels.some((value) => value !== null && (!Number.isFinite(value) || value < 0))) return 'Os níveis devem ser valores numéricos positivos.';
         if (payload.warning_level !== null && payload.critical_level !== null && payload.critical_level <= payload.warning_level) return 'O nível crítico deve ser maior que o nível de risco.';
@@ -395,8 +414,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = {
             name: document.getElementById('edit-point-name').value.trim(),
             type: document.getElementById('edit-point-type').value,
-            latitude: Number(document.getElementById('edit-point-latitude').value),
-            longitude: Number(document.getElementById('edit-point-longitude').value),
+            latitude: parseOptionalCoordinate(document.getElementById('edit-point-latitude').value),
+            longitude: parseOptionalCoordinate(document.getElementById('edit-point-longitude').value),
             city_region: document.getElementById('edit-point-city').value.trim() || null,
             description: document.getElementById('edit-point-description').value.trim() || null,
             status: document.getElementById('edit-point-status').value,
@@ -828,7 +847,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json().catch(() => ({}));
             if (!response.ok || !data.ok) throw new Error(data.message || 'Falha ao importar CSV.');
             feedback.className = 'text-sm mt-3 text-green-600';
-            feedback.innerHTML = `Importação concluída: ${data.import.total_rows} linhas, ${data.import.imported_rows} importadas, ${data.import.failed_rows} falhas. <button type="button" data-import-historical-id="${data.data_point.id}" class="underline font-semibold">Ver gráfico histórico</button>`;
+            feedback.innerHTML = `${data.warning ? `<span class="block text-yellow-700 font-semibold mb-1">${escapeHtml(data.warning)}</span>` : ''}Importação concluída: ${data.import.total_rows} linhas, ${data.import.imported_rows} importadas, ${data.import.failed_rows} falhas. <button type="button" data-import-historical-id="${data.data_point.id}" class="underline font-semibold">Ver gráfico histórico</button>`;
             await loadDataPoints(); await loadActiveDataPoints();
         } catch (error) { feedback.textContent = error.message; feedback.className = 'text-sm mt-3 text-red-600'; }
         finally { button.disabled = false; }

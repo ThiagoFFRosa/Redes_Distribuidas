@@ -12,7 +12,8 @@ const migrations = [
   require('./migrations/009_event_sync_foundation'),
   require('./migrations/010_cluster_node_sync_fields'),
   require('./migrations/011_bootstrap_runs'),
-  require('./migrations/012_distributed_chart_generation')
+  require('./migrations/012_distributed_chart_generation'),
+  require('./migrations/013_data_point_location_review_status')
 ];
 
 const ensureMigrationsTable = async (connection) => {

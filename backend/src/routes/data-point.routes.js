@@ -6,6 +6,7 @@ const router = express.Router();
 const allowedTypes = new Set(['RIVER_LEVEL']);
 const allowedStatuses = new Set(['ACTIVE', 'INACTIVE']);
 const historicalChartService = require('../services/historical-chart.service');
+const { isBlank, isValidLatitude, isValidLongitude, normalizeLocationForStorage } = require('../utils/coordinates');
 
 const optionalNumber = (value) => {
   if (value === undefined || value === null || value === '') return { value: null };
@@ -29,16 +30,26 @@ const validatePayload = (body) => {
     return { error: 'O nível de risco deve ser maior que o nível normal.' };
   }
 
-  const latitudeMissing = body.latitude === undefined || body.latitude === null || body.latitude === '';
-  const longitudeMissing = body.longitude === undefined || body.longitude === null || body.longitude === '';
-  if (latitudeMissing || longitudeMissing) return { error: 'Latitude e longitude são obrigatórias.' };
+  const latitudeProvided = !isBlank(body.latitude);
+  const longitudeProvided = !isBlank(body.longitude);
+  if (latitudeProvided && !isValidLatitude(body.latitude)) return { error: 'Latitude inválida. Use um número entre -90 e 90.' };
+  if (longitudeProvided && !isValidLongitude(body.longitude)) return { error: 'Longitude inválida. Use um número entre -180 e 180.' };
+
+  const location = normalizeLocationForStorage({
+    latitude: body.latitude,
+    longitude: body.longitude,
+    missingError: 'Coordenadas ausentes. Corrija a localização manualmente para exibir no mapa.',
+    invalidError: 'Coordenadas inválidas. Corrija a localização manualmente para exibir no mapa.'
+  });
 
   const payload = {
     name: (body.name || '').trim(),
     type: body.type || 'RIVER_LEVEL',
-    latitude: Number(body.latitude),
-    longitude: Number(body.longitude),
+    latitude: location.latitude,
+    longitude: location.longitude,
     city_region: body.city_region || null,
+    location_status: location.location_status,
+    location_error: location.location_error,
     description: body.description || null,
     status: body.status || 'ACTIVE',
     normal_level: normal.value,
@@ -47,7 +58,6 @@ const validatePayload = (body) => {
     measurement_unit: (body.measurement_unit || 'm').trim() || 'm'
   };
   if (!payload.name) return { error: 'name é obrigatório.' };
-  if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) return { error: 'Latitude e longitude são obrigatórias.' };
   if (!allowedTypes.has(payload.type)) return { error: 'type inválido.' };
   if (!allowedStatuses.has(payload.status)) return { error: 'status inválido.' };
   return { payload };

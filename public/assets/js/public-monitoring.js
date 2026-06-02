@@ -7,6 +7,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const labels = { NORMAL: 'Normal', ATTENTION: 'Atenção', CRITICAL: 'Crítico', INACTIVE: 'Inativo', UNKNOWN: 'Sem dados' };
   const escapeHtml = (value = '') => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
   const hasValue = (value) => value !== null && value !== undefined && value !== '';
+  const isValidLatitude = (value) => { const n = Number(value); return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(n) && n >= -90 && n <= 90; };
+  const isValidLongitude = (value) => { const n = Number(value); return value !== null && value !== undefined && String(value).trim() !== '' && Number.isFinite(n) && n >= -180 && n <= 180; };
+  const hasValidCoordinates = (point = {}) => isValidLatitude(point.latitude) && isValidLongitude(point.longitude);
   const formatLevel = (value, unit = 'm') => hasValue(value) ? `${Number(value).toFixed(2)} ${unit || 'm'}` : 'Não configurado';
   const formatDate = (value) => value ? new Date(value).toLocaleString('pt-BR') : '-';
   const latestValue = (point) => point.latest_measurement ? `${Number(point.latest_measurement.value).toFixed(2)} ${point.latest_measurement.unit || point.measurement_unit || 'm'}` : 'Sem medição';
@@ -50,7 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tbody.innerHTML = state.points.map((point) => `
       <tr class="hover:bg-slate-50 cursor-pointer" data-point-id="${point.id}">
         <td class="p-4 font-semibold text-dark">${escapeHtml(point.name)}</td>
-        <td class="p-4 text-slate-600">${escapeHtml(point.city_region || '-')}</td>
+        <td class="p-4 text-slate-600">${hasValidCoordinates(point) ? escapeHtml(point.city_region || '-') : '<span class="text-yellow-700 font-medium">Sem coordenadas — Corrigir</span>'}</td>
         <td class="p-4 font-mono text-slate-600">${escapeHtml(latestValue(point))}</td>
         <td class="p-4"><span class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700"><span class="w-2.5 h-2.5 rounded-full" style="background:${colors[point.risk_status] || colors.UNKNOWN}"></span>${labels[point.risk_status] || point.risk_status}</span></td>
         <td class="p-4 text-slate-500 whitespace-nowrap">${formatDate(point.latest_measurement?.measured_at)}</td>
@@ -133,12 +136,14 @@ document.addEventListener('DOMContentLoaded', () => {
     state.markers = [];
     const bounds = [];
     state.points.forEach((point) => {
-      if (!Number.isFinite(Number(point.latitude)) || !Number.isFinite(Number(point.longitude))) return;
-      const marker = L.marker([point.latitude, point.longitude], { icon: makeIcon(point.risk_status) }).addTo(state.map);
+      if (!hasValidCoordinates(point)) return;
+      const lat = Number(point.latitude);
+      const lng = Number(point.longitude);
+      const marker = L.marker([lat, lng], { icon: makeIcon(point.risk_status) }).addTo(state.map);
       marker.bindPopup(`<strong>${escapeHtml(point.name)}</strong><br>${escapeHtml(labels[point.risk_status] || point.risk_status)}<br>${escapeHtml(latestValue(point))}`);
       marker.on('click', () => selectPoint(point));
       state.markers.push(marker);
-      bounds.push([point.latitude, point.longitude]);
+      bounds.push([lat, lng]);
     });
     if (bounds.length) state.map.fitBounds(bounds, { padding: [35, 35], maxZoom: 13 });
     else state.map.setView([-23.0264, -45.5553], 11);
@@ -154,7 +159,10 @@ document.addEventListener('DOMContentLoaded', () => {
       renderMarkers();
       renderTable();
       renderSummaryCards();
-      if (statusEl) statusEl.textContent = state.points.length ? 'Pontos carregados do banco.' : 'Nenhum ponto cadastrado no banco.';
+      if (statusEl) {
+        const validCount = state.points.filter(hasValidCoordinates).length;
+        statusEl.textContent = validCount ? `Pontos carregados do banco. ${validCount} com coordenadas válidas no mapa.` : 'Nenhum ponto com coordenadas válidas para exibir no mapa.';
+      }
     } catch (error) {
       if (statusEl) statusEl.textContent = error.message;
       renderTable();

@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const pool = require('../database/connection');
 const syncEventService = require('../services/sync-event.service');
 const syncPayloadService = require('../services/sync-payload.service');
+const { hasValidCoordinates } = require('../utils/coordinates');
 
 const toNullableNumber = (value) => (value == null ? null : Number(value));
 
@@ -12,7 +13,16 @@ const toApi = (row) => row && ({
   normal_level: toNullableNumber(row.normal_level),
   warning_level: toNullableNumber(row.warning_level),
   critical_level: toNullableNumber(row.critical_level),
-  measurement_unit: row.measurement_unit || 'm'
+  measurement_unit: row.measurement_unit || 'm',
+  location_status: row.location_status || (hasValidCoordinates(row) ? 'VALID' : 'NEEDS_REVIEW'),
+  location_error: row.location_error || null,
+  location: {
+    latitude: row.latitude == null ? null : Number(row.latitude),
+    longitude: row.longitude == null ? null : Number(row.longitude),
+    is_valid: hasValidCoordinates(row),
+    status: row.location_status || (hasValidCoordinates(row) ? 'VALID' : 'NEEDS_REVIEW'),
+    error: row.location_error || null
+  }
 });
 
 const toApiWithLatestMeasurement = (row) => {
@@ -68,8 +78,8 @@ const findAllWithLatestMeasurement = async () => {
 
 const create = async (payload) => {
   const [result] = await pool.execute(
-    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.uuid || crypto.randomUUID(),
       payload.name,
@@ -77,6 +87,8 @@ const create = async (payload) => {
       payload.latitude,
       payload.longitude,
       payload.city_region || null,
+      payload.location_status || (hasValidCoordinates(payload) ? 'VALID' : 'NEEDS_REVIEW'),
+      payload.location_error || null,
       payload.description || null,
       payload.status || 'ACTIVE',
       payload.normal_level ?? null,
@@ -95,7 +107,7 @@ const create = async (payload) => {
 const update = async (id, payload) => {
   await pool.execute(
     `UPDATE data_points
-        SET name = ?, type = ?, latitude = ?, longitude = ?, city_region = ?, description = ?, status = ?,
+        SET name = ?, type = ?, latitude = ?, longitude = ?, city_region = ?, location_status = ?, location_error = ?, description = ?, status = ?,
             normal_level = ?, warning_level = ?, critical_level = ?, measurement_unit = ?
       WHERE id = ?`,
     [
@@ -104,6 +116,8 @@ const update = async (id, payload) => {
       payload.latitude,
       payload.longitude,
       payload.city_region || null,
+      payload.location_status || (hasValidCoordinates(payload) ? 'VALID' : 'NEEDS_REVIEW'),
+      payload.location_error || null,
       payload.description || null,
       payload.status || 'ACTIVE',
       payload.normal_level ?? null,
