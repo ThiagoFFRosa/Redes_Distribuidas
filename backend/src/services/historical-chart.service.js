@@ -3,6 +3,7 @@ const pool = require('../database/connection');
 const syncEventService = require('./sync-event.service');
 const syncPayloadService = require('./sync-payload.service');
 const dataPointRepository = require('../repositories/data-point.repository');
+const clusterNodeRepository = require('./cluster-node.repository');
 const { selectBestProcessingNode } = require('./processing-node-selector.service');
 const env = require('../config/env');
 
@@ -222,13 +223,65 @@ const createOrReuseJob = async (dataPoint, importId = null, options = {}) => {
 const getHistoricalChart = async (dataPointId) => {
   const dataPoint = await dataPointRepository.findById(dataPointId);
   if (!dataPoint) return null;
+  console.log(`[historical-chart] point_id=${dataPoint.id} data_point_uuid=${dataPoint.uuid}`);
+
   const [cacheRows] = await pool.execute(
-    `SELECT * FROM chart_cache WHERE data_point_uuid = ? AND chart_type = ? ORDER BY generated_at DESC, updated_at DESC LIMIT 1`,
+    `SELECT * FROM chart_cache
+      WHERE data_point_uuid = ? AND chart_type = ?
+      ORDER BY generated_at DESC, id DESC
+      LIMIT 1`,
     [dataPoint.uuid, CHART_TYPE]
   );
-  let job = await getLatestActiveJob(dataPoint.uuid);
   let chart = normalizeChart(cacheRows[0]);
-  const latestJob = job || await getLatestJob(dataPoint.uuid);
+  const chartPoints = Number(chart?.points_count || chart?.payload?.datasets?.[0]?.data?.length || 0);
+  console.log(`[historical-chart] cache encontrado=${Boolean(chart)}${chart ? ` cache_uuid=${chart.uuid || '-'} points=${chartPoints}` : ` para data_point_uuid=${dataPoint.uuid}`}`);
+
+  const latestJobForResponse = await getLatestJob(dataPoint.uuid);
+  const selfNode = await clusterNodeRepository.getSelfNode();
+  if (latestJobForResponse) {
+    console.log(`[historical-chart] job status=${normalizeStatus(latestJobForResponse.status)} assigned_to=${latestJobForResponse.assigned_to_node_name || latestJobForResponse.assigned_node_name || latestJobForResponse.assigned_to_node_uuid || '-'} self=${selfNode?.node_name || selfNode?.node_uuid || '-'}`);
+  }
+
+  if (chart?.status === 'READY') {
+    let status = 'READY';
+    let message = 'Gráfico pronto.';
+    if (chartPoints === 0) {
+      status = 'NO_DATA';
+      message = 'Este ponto ainda não possui dados históricos/medições.';
+    } else if (!isValidChartPayload(chart.payload) || chart.payload.datasets[0].data.length === 0) {
+      status = 'FAILED';
+      message = 'Cache do gráfico possui payload inválido. Solicite a atualização do gráfico.';
+      chart = { ...chart, available: false, error_message: message };
+    }
+    const cache = { ...chart, available: status === 'READY' || status === 'NO_DATA' };
+    console.log(`[historical-chart] retornando status=${status}`);
+    return {
+      ok: true,
+      status,
+      data_point: dataPoint,
+      chart: cache.available ? chart : null,
+      cache,
+      job: normalizeJob(latestJobForResponse),
+      message
+    };
+  }
+
+  if (chart?.status === 'FAILED') {
+    const message = chart.error_message || 'Falha ao gerar cache do gráfico.';
+    console.log('[historical-chart] retornando status=FAILED');
+    return {
+      ok: true,
+      status: 'FAILED',
+      data_point: dataPoint,
+      chart: null,
+      cache: { ...chart, available: false },
+      job: normalizeJob(latestJobForResponse),
+      message
+    };
+  }
+
+  let job = await getLatestActiveJob(dataPoint.uuid);
+  const latestJob = job || latestJobForResponse;
 
   if (!job && !latestJob && !chart) {
     const queued = await createOrReuseJob(dataPoint, null, { silent: true });
@@ -239,52 +292,34 @@ const getHistoricalChart = async (dataPointId) => {
 
   const jobStatus = normalizeStatus(job?.status);
   const assignedName = job?.assigned_to_node_name || job?.assigned_node_name || job?.assigned_to_node_uuid || null;
+  const assignedToSelf = Boolean((job?.assigned_to_node_uuid && selfNode?.node_uuid && job.assigned_to_node_uuid === selfNode.node_uuid)
+    || (job?.assigned_node_id && selfNode?.id && Number(job.assigned_node_id) === Number(selfNode.id)));
   let status = 'NO_DATA';
-  let message = null;
+  let message = 'Este ponto ainda não possui dados históricos/medições.';
 
   if (jobStatus === 'FAILED') {
     status = 'FAILED';
     message = job?.error_message || 'Falha ao gerar gráfico histórico.';
   } else if (jobStatus === 'PENDING' || jobStatus === 'PROCESSING') {
     status = 'PROCESSING';
-    message = chart?.status === 'READY'
-      ? 'Um novo gráfico está sendo gerado. Exibindo a última versão disponível.'
-      : (jobStatus === 'PENDING' ? 'Aguardando processamento distribuído.' : 'Gráfico sendo gerado.');
-  } else if (jobStatus === 'DONE' && !chart) {
-    status = 'WAITING_CACHE_SYNC';
-    message = `Gráfico gerado${assignedName ? ` em ${assignedName}` : ' no node responsável'}. Aguardando cache chegar neste servidor.`;
-  } else if (chart?.status === 'READY') {
-    const pointsCount = Number(chart.points_count || 0);
-    if (pointsCount === 0) {
-      status = 'NO_DATA';
-      message = 'Este ponto ainda não possui dados históricos/medições.';
-    } else if (!isValidChartPayload(chart.payload) || chart.payload.datasets[0].data.length === 0) {
-      status = 'FAILED';
-      message = 'Cache do gráfico possui payload inválido. Solicite a atualização do gráfico.';
-      chart = { ...chart, available: false, error_message: message };
-    } else {
-      status = 'READY';
-      message = 'Gráfico pronto.';
-    }
-  } else if (chart?.status === 'FAILED') {
-    status = 'FAILED';
-    message = chart.error_message || 'Falha ao gerar cache do gráfico.';
+    message = jobStatus === 'PENDING' ? 'Aguardando processamento distribuído.' : 'Gráfico sendo gerado.';
   } else if (jobStatus === 'DONE') {
-    status = 'WAITING_CACHE_SYNC';
-    message = `Gráfico gerado${assignedName ? ` em ${assignedName}` : ' no node responsável'}. Aguardando cache chegar neste servidor.`;
-  } else {
-    status = 'NO_DATA';
-    message = 'Este ponto ainda não possui dados históricos/medições.';
+    if (assignedToSelf) {
+      status = 'CACHE_MISSING_LOCAL';
+      message = 'Job local concluído, mas chart_cache não foi encontrado.';
+    } else {
+      status = 'WAITING_CACHE_SYNC';
+      message = `Gráfico gerado${assignedName ? ` em ${assignedName}` : ' no node responsável'}. Aguardando cache chegar neste servidor.`;
+    }
   }
 
-  const cache = chart ? { ...chart, available: chart.status === 'READY' && status !== 'WAITING_CACHE_SYNC' && status !== 'FAILED' } : { available: false };
-  if (status === 'NO_DATA' && chart) cache.available = true;
-
+  console.log(`[historical-chart] retornando status=${status}`);
+  const cache = chart ? { ...chart, available: false } : { available: false };
   return {
     ok: true,
     status,
     data_point: dataPoint,
-    chart: chart && cache.available ? chart : null,
+    chart: null,
     cache,
     job: normalizeJob(job),
     message
@@ -361,7 +396,7 @@ const generateChartForJob = async (job, selfNode) => {
     if (cacheResult.insertId) {
       cacheId = cacheResult.insertId;
     }
-    const [[cacheRow]] = await connection.execute('SELECT id, uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? LIMIT 1', [dataPointUuid, CHART_TYPE]);
+    const [[cacheRow]] = await connection.execute('SELECT id, uuid, source_job_uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? ORDER BY generated_at DESC, id DESC LIMIT 1', [dataPointUuid, CHART_TYPE]);
     cacheId = cacheId || cacheRow?.id || null;
     cacheUuid = cacheRow?.uuid || null;
     if (!cacheId) throw new Error('chart_cache não foi salvo');
@@ -379,7 +414,7 @@ const generateChartForJob = async (job, selfNode) => {
   }
 
   console.log(`[chart-worker] job DONE uuid=${job.uuid}`);
-  console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid || '-'} points=${total}`);
+  console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid || '-'} points=${total} source_job_uuid=${job.uuid}`);
   return { payload, summary };
 };
 
