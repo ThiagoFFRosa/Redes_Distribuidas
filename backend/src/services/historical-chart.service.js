@@ -40,6 +40,51 @@ const calculateTrend = (rows) => {
 
 const normalizeStatus = (status) => (status === 'RUNNING' ? 'PROCESSING' : status);
 
+const emptySummary = () => ({
+  points_count: 0,
+  total_measurements: 0,
+  sampled_points: 0,
+  min: null,
+  max: null,
+  avg: null,
+  min_value: null,
+  max_value: null,
+  average_value: null,
+  latest_value: null,
+  latest_date: null,
+  date_start: null,
+  date_end: null,
+  trend: 'UNKNOWN'
+});
+
+const normalizeChartPayload = (payload, unit = 'm') => {
+  if (!payload) return null;
+  if (Array.isArray(payload.labels) && Array.isArray(payload.datasets)) return payload;
+  if (Array.isArray(payload.labels) && Array.isArray(payload.values)) {
+    return {
+      ...payload,
+      datasets: [{ label: `Cota histórica (${payload.unit || unit})`, data: payload.values }]
+    };
+  }
+  return payload;
+};
+
+const isValidChartPayload = (payload) => Boolean(
+  payload
+  && Array.isArray(payload.labels)
+  && Array.isArray(payload.datasets)
+  && payload.datasets.length > 0
+  && Array.isArray(payload.datasets[0].data)
+);
+
+const pointsCountFromSummary = (summary, row) => Number(
+  summary?.points_count
+  ?? summary?.sampled_points
+  ?? summary?.total_measurements
+  ?? row?.total_points
+  ?? 0
+);
+
 const createJobSyncEvent = async (jobId, connection = pool) => {
   const payload = await syncPayloadService.getChartGenerationJobPayloadById(jobId, connection);
   if (payload) await syncEventService.createEntitySyncEvent('chart_generation_job', payload, 'UPSERT', connection);
@@ -81,31 +126,49 @@ const findReusableJob = async (dataPointUuid) => {
     `SELECT cj.*, cn.node_name AS assigned_to_node_name
        FROM chart_generation_jobs cj
        LEFT JOIN cluster_nodes cn ON cn.node_uuid = cj.assigned_to_node_uuid
-      WHERE cj.data_point_uuid = ? AND cj.chart_type = ? AND cj.status IN ('PENDING', 'PROCESSING')
+       LEFT JOIN chart_cache cc ON cc.data_point_uuid = cj.data_point_uuid AND cc.chart_type = cj.chart_type AND cc.status = 'READY'
+      WHERE cj.data_point_uuid = ? AND cj.chart_type = ?
         AND cj.created_at >= DATE_SUB(NOW(), INTERVAL ${ACTIVE_JOB_REUSE_MINUTES} MINUTE)
-      ORDER BY cj.created_at DESC
+        AND (cj.status IN ('PENDING', 'PROCESSING') OR (cj.status = 'DONE' AND cc.id IS NULL))
+      ORDER BY FIELD(cj.status, 'PROCESSING', 'PENDING', 'DONE'), cj.created_at DESC
       LIMIT 1`,
     [dataPointUuid, CHART_TYPE]
   );
   return rows[0] || null;
 };
 
-const normalizeChart = (row) => row && ({
-  available: row.status === 'READY',
-  uuid: row.uuid,
-  status: row.status,
-  data: parseJson(row.payload),
-  payload: parseJson(row.payload),
-  summary: parseJson(row.summary),
-  generated_at: row.generated_at,
-  total_points: Number(row.total_points || 0),
-  date_start: row.date_start,
-  date_end: row.date_end,
-  generated_by_node_uuid: row.generated_by_node_uuid,
-  generated_by_node_name: row.generated_by_node_name,
-  source_job_uuid: row.source_job_uuid,
-  error_message: row.error_message
-});
+const normalizeChart = (row) => {
+  if (!row) return null;
+  const rawSummary = parseJson(row.summary) || {};
+  const summary = {
+    ...rawSummary,
+    points_count: pointsCountFromSummary(rawSummary, row),
+    min: rawSummary.min ?? rawSummary.min_value ?? null,
+    max: rawSummary.max ?? rawSummary.max_value ?? null,
+    avg: rawSummary.avg ?? rawSummary.average_value ?? null,
+    min_value: rawSummary.min_value ?? rawSummary.min ?? null,
+    max_value: rawSummary.max_value ?? rawSummary.max ?? null,
+    average_value: rawSummary.average_value ?? rawSummary.avg ?? null
+  };
+  const payload = normalizeChartPayload(parseJson(row.payload));
+  return {
+    available: row.status === 'READY',
+    uuid: row.uuid,
+    status: row.status,
+    data: payload,
+    payload,
+    summary,
+    generated_at: row.generated_at,
+    points_count: summary.points_count,
+    total_points: Number(row.total_points || summary.points_count || 0),
+    date_start: row.date_start || summary.date_start || null,
+    date_end: row.date_end || summary.date_end || null,
+    generated_by_node_uuid: row.generated_by_node_uuid,
+    generated_by_node_name: row.generated_by_node_name,
+    source_job_uuid: row.source_job_uuid,
+    error_message: row.error_message
+  };
+};
 
 const normalizeJob = (job) => job && ({
   id: job.id,
@@ -117,7 +180,8 @@ const normalizeJob = (job) => job && ({
   assigned_to: job.assigned_to_node_name || job.assigned_node_name || job.assigned_to_node_uuid || null,
   assigned_node_name: job.assigned_to_node_name || job.assigned_node_name || null,
   requested_by_node_uuid: job.requested_by_node_uuid,
-  error_message: job.error_message
+  error_message: job.error_message,
+  finished_at: job.finished_at
 });
 
 const chooseAssignee = async () => {
@@ -143,12 +207,6 @@ const createOrReuseJob = async (dataPoint, importId = null, options = {}) => {
     [jobUuid, dataPoint.id, CHART_TYPE, dataPoint.uuid, importId, selfNode?.id || null, selfNode?.node_uuid || null,
       assignedNode?.id || selfNode?.id || null, assignedNode?.node_uuid || selfNode?.node_uuid || null, assignedNode?.node_name || selfNode?.node_name || 'local', estimatedSeconds]
   );
-  await pool.execute(
-    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status)
-     VALUES (?, ?, ?, ?, 'GENERATING')
-     ON DUPLICATE KEY UPDATE status = IF(status='READY', 'STALE', 'GENERATING'), error_message=NULL`,
-    [crypto.randomUUID(), dataPoint.id, dataPoint.uuid, CHART_TYPE]
-  );
   await createJobSyncEvent(result.insertId);
   const [[job]] = await pool.execute(
     `SELECT cj.*, cn.node_name AS assigned_to_node_name FROM chart_generation_jobs cj
@@ -171,31 +229,63 @@ const getHistoricalChart = async (dataPointId) => {
   let job = await getLatestActiveJob(dataPoint.uuid);
   let chart = normalizeChart(cacheRows[0]);
   const latestJob = job || await getLatestJob(dataPoint.uuid);
-  const waitingForRemoteCache = latestJob?.status === 'DONE' && (!chart || ['GENERATING', 'STALE'].includes(chart.status));
 
-  if (!job && !waitingForRemoteCache && (!chart || chart.status === 'FAILED' || chart.status === 'GENERATING')) {
+  if (!job && !latestJob && !chart) {
     const queued = await createOrReuseJob(dataPoint, null, { silent: true });
     job = queued.job;
-  } else if (!job && waitingForRemoteCache) {
+  } else if (!job) {
     job = latestJob;
   }
 
   const jobStatus = normalizeStatus(job?.status);
-  const ready = chart?.status === 'READY' && (!job || jobStatus === 'DONE');
-  const status = ready ? 'READY' : (waitingForRemoteCache ? 'PROCESSING' : (jobStatus || (chart?.status === 'FAILED' ? 'FAILED' : 'NO_DATA')));
+  const assignedName = job?.assigned_to_node_name || job?.assigned_node_name || job?.assigned_to_node_uuid || null;
+  let status = 'NO_DATA';
   let message = null;
-  if (chart?.status === 'READY' && job) message = 'Um novo gráfico está sendo gerado. Exibindo a última versão disponível.';
-  if (waitingForRemoteCache) message = 'Gráfico concluído no node responsável. Aguardando sincronização do cache.';
-  if (!chart && jobStatus === 'PROCESSING') message = 'Gráfico sendo gerado.';
-  if (!chart && jobStatus === 'PENDING') message = 'Aguardando processamento distribuído.';
-  if (!chart && !job) message = 'Nenhum gráfico histórico disponível para este ponto.';
+
+  if (jobStatus === 'FAILED') {
+    status = 'FAILED';
+    message = job?.error_message || 'Falha ao gerar gráfico histórico.';
+  } else if (jobStatus === 'PENDING' || jobStatus === 'PROCESSING') {
+    status = 'PROCESSING';
+    message = chart?.status === 'READY'
+      ? 'Um novo gráfico está sendo gerado. Exibindo a última versão disponível.'
+      : (jobStatus === 'PENDING' ? 'Aguardando processamento distribuído.' : 'Gráfico sendo gerado.');
+  } else if (jobStatus === 'DONE' && !chart) {
+    status = 'WAITING_CACHE_SYNC';
+    message = `Gráfico gerado${assignedName ? ` em ${assignedName}` : ' no node responsável'}. Aguardando cache chegar neste servidor.`;
+  } else if (chart?.status === 'READY') {
+    const pointsCount = Number(chart.points_count || 0);
+    if (pointsCount === 0) {
+      status = 'NO_DATA';
+      message = 'Este ponto ainda não possui dados históricos/medições.';
+    } else if (!isValidChartPayload(chart.payload) || chart.payload.datasets[0].data.length === 0) {
+      status = 'FAILED';
+      message = 'Cache do gráfico possui payload inválido. Solicite a atualização do gráfico.';
+      chart = { ...chart, available: false, error_message: message };
+    } else {
+      status = 'READY';
+      message = 'Gráfico pronto.';
+    }
+  } else if (chart?.status === 'FAILED') {
+    status = 'FAILED';
+    message = chart.error_message || 'Falha ao gerar cache do gráfico.';
+  } else if (jobStatus === 'DONE') {
+    status = 'WAITING_CACHE_SYNC';
+    message = `Gráfico gerado${assignedName ? ` em ${assignedName}` : ' no node responsável'}. Aguardando cache chegar neste servidor.`;
+  } else {
+    status = 'NO_DATA';
+    message = 'Este ponto ainda não possui dados históricos/medições.';
+  }
+
+  const cache = chart ? { ...chart, available: chart.status === 'READY' && status !== 'WAITING_CACHE_SYNC' && status !== 'FAILED' } : { available: false };
+  if (status === 'NO_DATA' && chart) cache.available = true;
 
   return {
     ok: true,
     status,
     data_point: dataPoint,
-    chart: chart?.status === 'READY' || chart?.status === 'STALE' ? chart : (chart || null),
-    cache: chart ? { ...chart, available: chart.status === 'READY' || chart.status === 'STALE' } : { available: false },
+    chart: chart && cache.available ? chart : null,
+    cache,
     job: normalizeJob(job),
     message
   };
@@ -219,13 +309,6 @@ const generateChartForJob = async (job, selfNode) => {
     [selfNode?.id || null, selfUuid, selfName, job.id]
   );
   await createJobSyncEvent(job.id);
-  await pool.execute(
-    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid, generated_by_node_name, source_job_uuid)
-     VALUES (?, ?, ?, ?, 'GENERATING', ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE status=IF(status='READY','STALE','GENERATING'), generated_by_node_id=VALUES(generated_by_node_id),
-       generated_by_node_uuid=VALUES(generated_by_node_uuid), generated_by_node_name=VALUES(generated_by_node_name), source_job_uuid=VALUES(source_job_uuid), error_message=NULL`,
-    [crypto.randomUUID(), dataPointId, dataPointUuid, CHART_TYPE, selfNode?.id || null, selfUuid, selfName, job.uuid]
-  );
 
   const [rows] = await pool.execute(
     `SELECT measured_at, value FROM historical_measurements WHERE data_point_id=? ORDER BY measured_at ASC`,
@@ -240,9 +323,13 @@ const generateChartForJob = async (job, selfNode) => {
   const values = sampled.map((row) => Number(row.value));
   const numericValues = rows.map((row) => Number(row.value)).filter(Number.isFinite);
   const latest = rows[rows.length - 1] || null;
-  const summary = {
+  const summary = total === 0 ? emptySummary() : {
+    points_count: sampled.length,
     total_measurements: total,
     sampled_points: sampled.length,
+    min: numericValues.length ? Math.min(...numericValues) : null,
+    max: numericValues.length ? Math.max(...numericValues) : null,
+    avg: numericValues.length ? numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length : null,
     min_value: numericValues.length ? Math.min(...numericValues) : null,
     max_value: numericValues.length ? Math.max(...numericValues) : null,
     average_value: numericValues.length ? numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length : null,
@@ -252,22 +339,47 @@ const generateChartForJob = async (job, selfNode) => {
     date_end: latest ? dateOnly(latest.measured_at) : null,
     trend: calculateTrend(rows)
   };
-  const payload = { labels, values, unit: 'm', full_count: total, sampled_count: sampled.length };
+  const payload = total === 0
+    ? { labels: [], datasets: [{ label: 'Cota histórica (m)', data: [] }], values: [], unit: 'm', full_count: 0, sampled_count: 0 }
+    : { labels, datasets: [{ label: 'Cota histórica (m)', data: values }], values, unit: 'm', full_count: total, sampled_count: sampled.length };
   await pool.execute('UPDATE chart_generation_jobs SET progress_percent=80 WHERE id=?', [job.id]);
-  await pool.execute(
-    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid,
-      generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, generated_at)
-     VALUES (?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-     ON DUPLICATE KEY UPDATE status='READY', generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid),
-       generated_by_node_name=VALUES(generated_by_node_name), source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start),
-       date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), error_message=NULL, generated_at=NOW()`,
-    [crypto.randomUUID(), dataPointId, dataPointUuid, CHART_TYPE, selfNode?.id || null, selfUuid, selfName, job.uuid, total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary)]
-  );
-  await pool.execute("UPDATE chart_generation_jobs SET status='DONE', progress_percent=100, finished_at=NOW() WHERE id=?", [job.id]);
-  await createJobSyncEvent(job.id);
-  const [[cacheRow]] = await pool.execute('SELECT id FROM chart_cache WHERE data_point_uuid=? AND chart_type=? LIMIT 1', [dataPointUuid, CHART_TYPE]);
-  if (cacheRow) await createCacheSyncEvent(cacheRow.id);
-  console.log(`[chart-worker] concluído job_uuid=${job.uuid} points=${total}`);
+
+  let cacheId = null;
+  let cacheUuid = null;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [cacheResult] = await connection.execute(
+      `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid,
+        generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, generated_at)
+       VALUES (?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE status='READY', generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid),
+         generated_by_node_name=VALUES(generated_by_node_name), source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start),
+         date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), error_message=NULL, generated_at=NOW()`,
+      [crypto.randomUUID(), dataPointId, dataPointUuid, CHART_TYPE, selfNode?.id || null, selfUuid, selfName, job.uuid, total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary)]
+    );
+    if (cacheResult.insertId) {
+      cacheId = cacheResult.insertId;
+    }
+    const [[cacheRow]] = await connection.execute('SELECT id, uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? LIMIT 1', [dataPointUuid, CHART_TYPE]);
+    cacheId = cacheId || cacheRow?.id || null;
+    cacheUuid = cacheRow?.uuid || null;
+    if (!cacheId) throw new Error('chart_cache não foi salvo');
+    await connection.execute("UPDATE chart_generation_jobs SET status='DONE', progress_percent=100, finished_at=NOW(), error_message=NULL WHERE id=?", [job.id]);
+    await createCacheSyncEvent(cacheId, connection);
+    await createJobSyncEvent(job.id, connection);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback().catch(() => {});
+    await pool.execute("UPDATE chart_generation_jobs SET status='FAILED', error_message=?, finished_at=NOW() WHERE id=?", [error.message, job.id]).catch(() => {});
+    await createJobSyncEvent(job.id).catch(() => {});
+    throw error;
+  } finally {
+    connection.release();
+  }
+
+  console.log(`[chart-worker] job DONE uuid=${job.uuid}`);
+  console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid || '-'} points=${total}`);
   return { payload, summary };
 };
 
@@ -277,4 +389,4 @@ const markJobFailed = async (job, error) => {
   await createJobSyncEvent(job.id).catch(() => {});
 };
 
-module.exports = { getHistoricalChart, regenerateChart, generateChartForJob, markJobFailed, createJobSyncEvent, CHART_TYPE, toNumberOrNull, normalizeStatus, CHART_JOB_TIMEOUT_SECONDS: env.chartJobTimeoutSeconds };
+module.exports = { getHistoricalChart, regenerateChart, generateChartForJob, markJobFailed, createJobSyncEvent, CHART_TYPE, toNumberOrNull, normalizeStatus, isValidChartPayload, CHART_JOB_TIMEOUT_SECONDS: env.chartJobTimeoutSeconds };

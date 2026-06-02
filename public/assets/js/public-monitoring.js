@@ -92,10 +92,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const empty = document.getElementById('public-point-chart-empty');
     const canvas = document.getElementById('public-point-chart');
     if (state.chart) state.chart.destroy();
-    const chartPayload = payload.chart?.payload;
-    if (!chartPayload?.labels?.length) { empty.textContent = payload.message || 'Gráfico histórico ainda está sendo gerado.'; empty?.classList.remove('hidden'); canvas?.classList.add('hidden'); return; }
+    const chartPayload = payload.chart?.payload || payload.cache?.payload;
+    const normalizedPayload = chartPayload?.datasets ? chartPayload : (chartPayload?.values ? { ...chartPayload, datasets: [{ label: `Histórico (${chartPayload.unit || 'm'})`, data: chartPayload.values }] } : chartPayload);
+    const isReady = payload.status === 'READY' && normalizedPayload?.labels?.length && normalizedPayload?.datasets?.[0]?.data?.length;
+    if (!isReady) { empty.textContent = payload.message || (payload.status === 'NO_DATA' ? 'Este ponto ainda não possui dados históricos/medições.' : 'Gráfico histórico ainda está sendo gerado.'); empty?.classList.remove('hidden'); canvas?.classList.add('hidden'); return; }
     empty?.classList.add('hidden'); canvas?.classList.remove('hidden');
-    state.chart = new Chart(canvas, { type: 'line', data: { labels: chartPayload.labels, datasets: [{ label: `Histórico (${chartPayload.unit || 'm'})`, data: chartPayload.values, borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,0.10)', fill: true, tension: 0.2, pointRadius: 0 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true }, subtitle: { display: Boolean(payload.message), text: payload.message || '' } }, scales: { y: { title: { display: true, text: chartPayload.unit || 'm' } } } } });
+    state.chart = new Chart(canvas, { type: 'line', data: { labels: normalizedPayload.labels, datasets: normalizedPayload.datasets.map((dataset) => ({ ...dataset, borderColor: dataset.borderColor || '#0d9488', backgroundColor: dataset.backgroundColor || 'rgba(13,148,136,0.10)', fill: dataset.fill ?? true, tension: dataset.tension ?? 0.2, pointRadius: dataset.pointRadius ?? 0 })) }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true }, subtitle: { display: Boolean(payload.message), text: payload.message || '' } }, scales: { y: { title: { display: true, text: normalizedPayload.unit || 'm' } } } } });
   };
 
   const loadMeasurements = async (point) => {

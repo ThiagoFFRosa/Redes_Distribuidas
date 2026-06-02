@@ -198,7 +198,7 @@ const takeBatchWithinPayloadLimit = (events, maxEvents, maxPayloadBytes) => {
   return { batch, bytes };
 };
 
-const SENT_RESULT_STATUSES = new Set(['APPLIED', 'SKIPPED_ALREADY_APPLIED', 'SKIPPED_OLDER_VERSION']);
+const SENT_RESULT_STATUSES = new Set(['APPLIED', 'SKIPPED_ALREADY_APPLIED']);
 
 const normalizeResultStatus = (result) => String(result?.status || 'UNKNOWN').toUpperCase();
 

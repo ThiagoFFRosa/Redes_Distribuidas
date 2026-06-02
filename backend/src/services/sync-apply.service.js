@@ -208,7 +208,10 @@ const upsertChartCache = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   if (!p.uuid) throw new Error('chart_cache sem uuid');
-  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
+  if (!dataPointId) {
+    console.log(`[sync-apply] chart_cache DEFERRED_MISSING_DEPENDENCY uuid=${p.uuid} data_point_uuid=${p.data_point_uuid || '-'}`);
+    return { status: 'deferred', reason: 'missing_data_point' };
+  }
   if (await shouldSkipOlder(c, 'chart_cache', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
     `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid, generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, error_message, generated_at)
@@ -220,6 +223,7 @@ const upsertChartCache = async (event, c) => {
     [p.uuid, dataPointId, p.data_point_uuid, p.chart_type || 'HISTORICAL_RIVER_LEVEL', p.status || 'READY', p.generated_by_node_uuid || null, p.generated_by_node_uuid || null,
       p.generated_by_node_name || null, p.source_job_uuid || null, p.total_points || 0, p.date_start || null, p.date_end || null, json(p.payload), json(p.summary), p.error_message || null, asDate(p.generated_at)]
   );
+  console.log(`[sync-apply] chart_cache APPLIED uuid=${p.uuid} data_point_uuid=${p.data_point_uuid || '-'} points=${p.total_points || 0}`);
   return 'applied';
 };
 

@@ -24,12 +24,20 @@ const reduceChartPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return payload;
   const labels = Array.isArray(payload.labels) ? payload.labels : [];
   const values = Array.isArray(payload.values) ? payload.values : [];
-  const maxLength = Math.max(labels.length, values.length);
+  const datasets = Array.isArray(payload.datasets) ? payload.datasets : [];
+  const firstDatasetValues = Array.isArray(datasets[0]?.data) ? datasets[0].data : [];
+  const maxLength = Math.max(labels.length, values.length, firstDatasetValues.length);
   if (maxLength <= MAX_CHART_SYNC_POINTS) return payload;
+  const sampledLabels = downsampleSeries(labels);
+  const sampledValues = downsampleSeries(values.length ? values : firstDatasetValues);
   return {
     ...payload,
-    labels: downsampleSeries(labels),
-    values: downsampleSeries(values),
+    labels: sampledLabels,
+    values: sampledValues,
+    datasets: datasets.map((dataset, index) => ({
+      ...dataset,
+      data: downsampleSeries(Array.isArray(dataset.data) ? dataset.data : (index === 0 ? sampledValues : []))
+    })),
     downsampled: true,
     full_count: payload.full_count || maxLength,
     sync_limited_to: MAX_CHART_SYNC_POINTS
