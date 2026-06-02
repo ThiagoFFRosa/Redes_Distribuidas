@@ -22,9 +22,9 @@ const runCycle = async () => {
   try {
     const self = await repo.getSelfNode();
     if (!self?.node_uuid) return { ok: true, message: 'self não configurado', nodes: [] };
-    const nodes = (await repo.getExternalNodes()).filter((node) => node.node_uuid && node.status === 'ONLINE' && (node.public_url || node.tailscale_ip));
+    const nodes = (await repo.getExternalNodes()).filter((node) => node.node_uuid && node.status !== 'OFFLINE' && (node.public_url || node.tailscale_ip));
     if (!nodes.length) {
-      logger.debug('[sync] nenhum nó externo online para sincronizar');
+      logger.debug('[sync] nenhum nó externo elegível para sincronizar');
       return { ok: true, nodes: [] };
     }
     const results = [];
