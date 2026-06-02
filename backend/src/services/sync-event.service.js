@@ -4,6 +4,7 @@ const { shouldSkipSyncEvent } = require('./sync-context.service');
 const { nowMysql } = require('../utils/mysql-date');
 const env = require('../config/env');
 const logger = require('../utils/logger');
+const registryService = require('./synced-entity-registry.service');
 
 const normalizeNumberField = (key, value) => {
   if ((key === 'power_score' || key === 'port') && value !== null && value !== undefined && value !== '') {
@@ -78,14 +79,14 @@ const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', pa
   const logPrefix = sizeBytes > 100 * 1024 ? '[sync-event] aviso: payload grande' : '[sync-event] criado';
   logger.info(`${logPrefix} entity=${entityType} key=${String(entityKey)} size=${formatKb(sizeBytes)}`);
   await connection.execute(
-    `INSERT INTO sync_events (event_uuid, source_node_uuid, entity_type, entity_key, operation, payload, payload_hash, version, created_at, applied_locally_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [eventUuid, self.node_uuid, entityType, String(entityKey), operation, toJson(payload), payloadHash, Number(payload?.structural_version || 1), createdAt, createdAt]
+    `INSERT INTO sync_events (event_uuid, source_node_uuid, origin_node_uuid, entity_type, entity_key, operation, payload, payload_hash, version, created_at, applied_locally_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [eventUuid, self.node_uuid, self.node_uuid, entityType, String(entityKey), operation, toJson(payload), payloadHash, Number(payload?.structural_version || 1), createdAt, createdAt]
   );
   await connection.execute(
-    `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, entity_type, entity_key, payload_hash, applied_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [eventUuid, self.node_uuid, entityType, String(entityKey), payloadHash, createdAt]
+    `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, origin_node_uuid, entity_type, entity_key, payload_hash, applied_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [eventUuid, self.node_uuid, self.node_uuid, entityType, String(entityKey), payloadHash, createdAt]
   );
 
   const [targets] = await connection.execute(
@@ -101,16 +102,16 @@ const createSyncEvent = async ({ entityType, entityKey, operation = 'UPSERT', pa
     );
   }
 
-  return { event_uuid: eventUuid, source_node_uuid: self.node_uuid, entity_type: entityType, entity_key: String(entityKey), operation, payload, payload_hash: payloadHash, created_at: createdAt };
+  return { event_uuid: eventUuid, source_node_uuid: self.node_uuid, origin_node_uuid: self.node_uuid, entity_type: entityType, entity_key: String(entityKey), operation, payload, payload_hash: payloadHash, created_at: createdAt };
 };
 
 const createEntitySyncEvent = async (entityType, payload, operation = 'UPSERT', connection = pool, options = {}) => (
   createSyncEvent({ entityType, entityKey: payload?.uuid || payload?.node_uuid || payload?.entity_key, operation, payload }, connection, options)
 );
 
-const backfillExistingSyncEvents = async () => {
+const backfillExistingSyncEvents = async ({ dryRun = true } = {}) => {
   const self = await getSelfIdentity(pool);
-  if (!self?.node_uuid) return { ok: true, skipped: true };
+  if (!self?.node_uuid) return { ok: true, skipped: true, reason: 'self node_uuid não configurado' };
   const payloadService = require('./sync-payload.service');
   const entities = [
     ['cluster_node', 'cluster_nodes', 'node_uuid', payloadService.getClusterNodePayloadById],
@@ -123,18 +124,40 @@ const backfillExistingSyncEvents = async () => {
     ['chart_cache', 'chart_cache', 'uuid', payloadService.getChartCachePayloadById]
   ];
   let created = 0;
+  let wouldCreate = 0;
+  let skippedRemote = 0;
+  let skippedExistingPayload = 0;
   for (const [entityType, tableName, keyColumn, getPayload] of entities) {
     const [rows] = await pool.execute(`SELECT id, ${keyColumn} AS entity_key FROM ${tableName} WHERE ${keyColumn} IS NOT NULL`);
     for (const row of rows) {
-      const [[exists]] = await pool.execute('SELECT id FROM sync_events WHERE entity_type=? AND entity_key=? LIMIT 1', [entityType, row.entity_key]);
-      if (exists) continue;
+      if (await registryService.hasSyncedEntity(entityType, row.entity_key, pool)) {
+        skippedRemote += 1;
+        continue;
+      }
       const payload = await getPayload(row.id, pool);
       if (!payload) continue;
-      const event = await createEntitySyncEvent(entityType, payload, 'UPSERT', pool, { reason: 'backfill' });
+      const payloadHash = hashPayload(payload);
+      const [[existingPayloadEvent]] = await pool.execute(
+        'SELECT id FROM sync_events WHERE entity_type=? AND entity_key=? AND payload_hash=? LIMIT 1',
+        [entityType, row.entity_key, payloadHash]
+      );
+      const [[existingAppliedEvent]] = await pool.execute(
+        'SELECT id FROM sync_applied_events WHERE entity_type=? AND entity_key=? AND payload_hash=? LIMIT 1',
+        [entityType, row.entity_key, payloadHash]
+      );
+      if (existingPayloadEvent || existingAppliedEvent) {
+        skippedExistingPayload += 1;
+        continue;
+      }
+      if (dryRun) {
+        wouldCreate += 1;
+        continue;
+      }
+      const event = await createEntitySyncEvent(entityType, payload, 'UPSERT', pool, { reason: 'manual-backfill' });
       if (event) created += 1;
     }
   }
-  return { ok: true, created };
+  return { ok: true, dry_run: Boolean(dryRun), created, would_create: wouldCreate, skipped_remote_or_bootstrap: skippedRemote, skipped_existing_payload: skippedExistingPayload };
 };
 
 module.exports = { createSyncEvent, createEntitySyncEvent, backfillExistingSyncEvents, hashPayload, canonicalizePayload };

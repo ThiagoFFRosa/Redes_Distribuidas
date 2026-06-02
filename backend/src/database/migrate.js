@@ -13,7 +13,8 @@ const migrations = [
   require('./migrations/010_cluster_node_sync_fields'),
   require('./migrations/011_bootstrap_runs'),
   require('./migrations/012_distributed_chart_generation'),
-  require('./migrations/013_data_point_location_review_status')
+  require('./migrations/013_data_point_location_review_status'),
+  require('./migrations/014_remote_sync_origin_registry')
 ];
 
 const ensureMigrationsTable = async (connection) => {

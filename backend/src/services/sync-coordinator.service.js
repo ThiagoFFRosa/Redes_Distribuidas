@@ -394,13 +394,15 @@ const applyBootstrapItems = async (table, items, sourceNodeUuid) => {
   const events = items.map((payload) => ({
     event_uuid: crypto.randomUUID(),
     source_node_uuid: sourceNodeUuid || crypto.randomUUID(),
+    origin_node_uuid: sourceNodeUuid || null,
+    source_mode: 'BOOTSTRAP',
     entity_type: entityTypeForTable[table],
     entity_key: payload.uuid || payload.node_uuid,
     operation: 'UPSERT',
     payload,
     created_at: nowMysql()
   }));
-  return applyService.applySyncEvents(events);
+  return applyService.applySyncEvents(events, { sourceMode: 'BOOTSTRAP' });
 };
 
 const runFullBootstrap = async (runId, hostUrl) => {

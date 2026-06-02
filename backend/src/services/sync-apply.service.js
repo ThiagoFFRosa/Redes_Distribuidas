@@ -3,6 +3,7 @@ const { hashPayload } = require('./sync-event.service');
 const { runWithoutSyncEvents } = require('./sync-context.service');
 const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
 const logger = require('../utils/logger');
+const registryService = require('./synced-entity-registry.service');
 
 const json = (value) => {
   if (typeof value === 'string') {
@@ -247,7 +248,7 @@ const resultStatusFor = (result) => {
   return 'APPLIED';
 };
 
-const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(async () => {
+const applySyncEvent = async (event, connection = pool, options = {}) => runWithoutSyncEvents(async () => {
   if (!event?.event_uuid) throw new Error('event_uuid obrigatório');
   const [[existing]] = await connection.execute('SELECT id FROM sync_applied_events WHERE event_uuid=? LIMIT 1', [event.event_uuid]);
   if (existing) return { status: 'skipped', reason: 'duplicate' };
@@ -256,15 +257,27 @@ const applySyncEvent = async (event, connection = pool) => runWithoutSyncEvents(
   const result = await handler(event, connection);
   if (result && result.status === 'deferred') return result;
   const payloadHash = event.payload_hash || hashPayload(event.payload);
+  const entityKey = registryService.registryEntityKeyForEvent(event);
+  const originNodeUuid = event.origin_node_uuid || event.source_node_uuid || null;
+  const appliedAt = nowMysql();
   await connection.execute(
-    `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, entity_type, entity_key, payload_hash, applied_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [event.event_uuid, event.source_node_uuid, event.entity_type, event.entity_key || event.payload?.uuid || event.payload?.node_uuid, payloadHash, nowMysql()]
+    `INSERT IGNORE INTO sync_applied_events (event_uuid, source_node_uuid, origin_node_uuid, entity_type, entity_key, payload_hash, applied_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [event.event_uuid, event.source_node_uuid || originNodeUuid, originNodeUuid, event.entity_type, entityKey, payloadHash, appliedAt]
   );
+  if (result !== 'skipped_older') {
+    await registryService.upsertSyncedEntity({
+      entityType: event.entity_type,
+      entityKey,
+      payloadHash,
+      sourceNodeUuid: originNodeUuid,
+      sourceMode: options.sourceMode || event.source_mode || 'REMOTE_SYNC'
+    }, connection);
+  }
   return result === 'skipped_older' ? { status: 'skipped', reason: 'older_than_local' } : { status: 'applied' };
 });
 
-const applySyncEvents = async (events = []) => {
+const applySyncEvents = async (events = [], options = {}) => {
   const order = ['cluster_node', 'data_point', 'historical_import', 'measurement', 'historical_measurement', 'alert', 'chart_generation_job', 'chart_cache'];
   const safeEvents = (Array.isArray(events) ? events : []).slice().sort((a, b) => {
     const ai = order.indexOf(a?.entity_type);
@@ -277,7 +290,7 @@ const applySyncEvents = async (events = []) => {
     for (const event of safeEvents) {
       try {
         await connection.beginTransaction();
-        const result = await applySyncEvent(event, connection);
+        const result = await applySyncEvent(event, connection, options);
         await connection.commit();
         const status = resultStatusFor(result);
         if (status === 'APPLIED') summary.applied += 1;

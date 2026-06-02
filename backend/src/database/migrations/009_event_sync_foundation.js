@@ -53,6 +53,7 @@ module.exports = {
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
         event_uuid CHAR(36) NOT NULL,
         source_node_uuid CHAR(36) NOT NULL,
+        origin_node_uuid CHAR(36) NULL,
         entity_type VARCHAR(80) NOT NULL,
         entity_key VARCHAR(180) NOT NULL,
         operation ENUM('UPSERT','DELETE','SOFT_DELETE','RESOLVE') NOT NULL DEFAULT 'UPSERT',
@@ -63,6 +64,7 @@ module.exports = {
         applied_locally_at DATETIME NULL,
         UNIQUE KEY uq_sync_event_uuid (event_uuid),
         INDEX idx_sync_events_source_node_uuid (source_node_uuid),
+        INDEX idx_sync_events_origin_node_uuid (origin_node_uuid),
         INDEX idx_sync_events_entity (entity_type, entity_key),
         INDEX idx_sync_events_created_at (created_at)
       )
@@ -73,6 +75,7 @@ module.exports = {
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
         event_uuid CHAR(36) NOT NULL,
         source_node_uuid CHAR(36) NOT NULL,
+        origin_node_uuid CHAR(36) NULL,
         entity_type VARCHAR(80) NOT NULL,
         entity_key VARCHAR(180) NOT NULL,
         payload_hash VARCHAR(100) NOT NULL,
