@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
         alertas: [],
         fila: [],
         historicalChart: null,
+        historicalPollTimer: null,
         currentHistoricalPointId: null,
         joinRequests: [],
         syncStatusByUuid: new Map(),
@@ -185,7 +186,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const trendLabel = (trend) => ({ RISING: 'Subindo', FALLING: 'Baixando', STABLE: 'Estável', UNKNOWN: 'Desconhecida' }[trend] || trend || '-');
     const formatMetric = (value, suffix = '') => hasValue(value) ? `${Number(value).toFixed(2)}${suffix}` : '-';
 
+    const stopHistoricalPolling = () => {
+        if (state.historicalPollTimer) clearTimeout(state.historicalPollTimer);
+        state.historicalPollTimer = null;
+    };
+
     const closeHistoricalModal = () => {
+        stopHistoricalPolling();
         document.getElementById('historical-modal')?.classList.add('hidden');
         document.getElementById('historical-modal')?.classList.remove('flex');
     };
@@ -201,12 +208,24 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
+    const scheduleHistoricalPolling = (pointId, status) => {
+        stopHistoricalPolling();
+        if (!['PENDING', 'PROCESSING'].includes(status)) return;
+        state.historicalPollTimer = setTimeout(async () => {
+            if (String(state.currentHistoricalPointId) !== String(pointId)) return;
+            try { await loadHistoricalChart(pointId); }
+            catch (error) { document.getElementById('historical-message').textContent = error.message; }
+        }, 2500);
+    };
+
     const loadHistoricalChart = async (pointId) => {
         const data = await apiFetch(`/api/data-points/${pointId}/historical-chart`);
         const point = data.data_point || state.pontos.find((p) => String(p.id) === String(pointId));
-        const summary = data.chart?.summary || {};
+        const cache = data.cache?.available ? data.cache : data.chart;
+        const payload = cache?.data || cache?.payload;
+        const summary = cache?.summary || {};
         document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
-        document.getElementById('historical-message').textContent = data.message || '';
+        document.getElementById('historical-message').textContent = data.message || (data.status === 'READY' ? 'Gráfico pronto.' : '');
         document.getElementById('historical-summary').innerHTML = `
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Período</span><strong>${escapeHtml(summary.date_start || '-')} a ${escapeHtml(summary.date_end || '-')}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Medições</span><strong>${summary.total_measurements ?? '-'}</strong></div>
@@ -214,12 +233,14 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Máximo</span><strong>${formatMetric(summary.max_value, 'm')}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Média</span><strong>${formatMetric(summary.average_value, 'm')}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Tendência</span><strong>${escapeHtml(trendLabel(summary.trend))}</strong></div>`;
-        document.getElementById('historical-job').innerHTML = data.job ? `Processando em: <strong>${escapeHtml(data.job.assigned_node_name || '-')}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : '';
-        if (data.chart?.payload) renderHistoricalChart(data.chart.payload);
+        document.getElementById('historical-job').innerHTML = data.job ? `Processando em: <strong>${escapeHtml(data.job.assigned_to || data.job.assigned_node_name || '-')}</strong> · Status: <strong>${escapeHtml(data.job.status || data.status || '-')}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : '';
+        if (payload) renderHistoricalChart(payload);
         else renderHistoricalChart({ labels: [], values: [], unit: 'm' });
+        scheduleHistoricalPolling(pointId, data.status || data.job?.status);
     };
 
     const openHistoricalModal = async (point) => {
+        stopHistoricalPolling();
         state.currentHistoricalPointId = point.id;
         document.getElementById('historical-modal')?.classList.remove('hidden');
         document.getElementById('historical-modal')?.classList.add('flex');
@@ -790,6 +811,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('close-historical-modal')?.addEventListener('click', closeHistoricalModal);
     document.getElementById('regenerate-historical-chart')?.addEventListener('click', async () => {
         if (!state.currentHistoricalPointId) return;
+        stopHistoricalPolling();
         await apiFetch(`/api/data-points/${state.currentHistoricalPointId}/historical-chart/regenerate`, { method: 'POST', body: JSON.stringify({}) });
         await loadHistoricalChart(state.currentHistoricalPointId);
     });

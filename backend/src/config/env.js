@@ -49,5 +49,6 @@ module.exports = {
   syncBatchSize: parsePositiveInteger(process.env.SYNC_BATCH_SIZE, 100),
   syncMaxPayloadBytes: parsePositiveInteger(process.env.SYNC_MAX_PAYLOAD_BYTES, 512000),
   syncMaxBatchesPerCycle: parsePositiveInteger(process.env.SYNC_MAX_BATCHES_PER_CYCLE, 5),
-  syncDedupeWindowMs: parsePositiveInteger(process.env.SYNC_DEDUPE_WINDOW_MS, 2000)
+  syncDedupeWindowMs: parsePositiveInteger(process.env.SYNC_DEDUPE_WINDOW_MS, 2000),
+  chartJobTimeoutSeconds: parsePositiveInteger(process.env.CHART_JOB_TIMEOUT_SECONDS, 60)
 };

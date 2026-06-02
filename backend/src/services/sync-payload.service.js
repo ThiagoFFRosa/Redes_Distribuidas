@@ -117,20 +117,64 @@ const getHistoricalMeasurementPayloadById = async (id, connection = pool) => {
   };
 };
 
-const getChartCachePayloadById = async (id, connection = pool) => {
+const getChartGenerationJobPayloadById = async (id, connection = pool) => {
   const [[row]] = await connection.execute(
-    `SELECT cc.*, dp.uuid AS data_point_uuid FROM chart_cache cc JOIN data_points dp ON dp.id=cc.data_point_id WHERE cc.id=? LIMIT 1`, [id]
+    `SELECT cj.*, dp.uuid AS joined_data_point_uuid, requested.node_uuid AS joined_requested_by_node_uuid,
+            assigned.node_uuid AS joined_assigned_to_node_uuid, assigned.node_name AS assigned_to_node_name
+       FROM chart_generation_jobs cj
+       JOIN data_points dp ON dp.id=cj.data_point_id
+       LEFT JOIN cluster_nodes requested ON requested.id=cj.requested_by_node_id
+       LEFT JOIN cluster_nodes assigned ON assigned.id=cj.assigned_node_id
+      WHERE cj.id=? LIMIT 1`, [id]
   );
   return row && {
-    uuid: row.uuid, data_point_uuid: row.data_point_uuid, chart_type: row.chart_type, status: row.status,
-    generated_by_node_name: row.generated_by_node_name, total_points: Number(row.total_points || 0),
-    date_start: dateOnly(row.date_start), date_end: dateOnly(row.date_end), payload: reduceChartPayload(parseJson(row.payload)), summary: parseJson(row.summary),
-    error_message: row.error_message, generated_at: dateValue(row.generated_at), created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)
+    uuid: row.uuid,
+    data_point_uuid: row.data_point_uuid || row.joined_data_point_uuid,
+    chart_type: row.chart_type || 'HISTORICAL_RIVER_LEVEL',
+    requested_by_node_uuid: row.requested_by_node_uuid || row.joined_requested_by_node_uuid,
+    assigned_to_node_uuid: row.assigned_to_node_uuid || row.joined_assigned_to_node_uuid,
+    assigned_to_node_name: row.assigned_to_node_name || row.assigned_node_name,
+    status: row.status === 'RUNNING' ? 'PROCESSING' : row.status,
+    progress_percent: Number(row.progress_percent || 0),
+    estimated_seconds: row.estimated_seconds == null ? null : Number(row.estimated_seconds),
+    error_message: row.error_message,
+    started_at: dateValue(row.started_at),
+    finished_at: dateValue(row.finished_at),
+    created_at: dateValue(row.created_at),
+    updated_at: dateValue(row.updated_at)
+  };
+};
+
+const getChartCachePayloadById = async (id, connection = pool) => {
+  const [[row]] = await connection.execute(
+    `SELECT cc.*, dp.uuid AS joined_data_point_uuid, cn.node_uuid AS joined_generated_by_node_uuid
+       FROM chart_cache cc
+       JOIN data_points dp ON dp.id=cc.data_point_id
+       LEFT JOIN cluster_nodes cn ON cn.id=cc.generated_by_node_id
+      WHERE cc.id=? LIMIT 1`, [id]
+  );
+  return row && {
+    uuid: row.uuid,
+    data_point_uuid: row.data_point_uuid || row.joined_data_point_uuid,
+    chart_type: row.chart_type,
+    status: row.status,
+    generated_by_node_uuid: row.generated_by_node_uuid || row.joined_generated_by_node_uuid,
+    generated_by_node_name: row.generated_by_node_name,
+    source_job_uuid: row.source_job_uuid,
+    total_points: Number(row.total_points || 0),
+    date_start: dateOnly(row.date_start),
+    date_end: dateOnly(row.date_end),
+    payload: reduceChartPayload(parseJson(row.payload)),
+    summary: parseJson(row.summary),
+    error_message: row.error_message,
+    generated_at: dateValue(row.generated_at),
+    created_at: dateValue(row.created_at),
+    updated_at: dateValue(row.updated_at)
   };
 };
 
 module.exports = {
   dataPointPayload, clusterNodePayload, getDataPointPayloadById, getClusterNodePayloadById,
   getMeasurementPayloadById, getAlertPayloadById, getHistoricalImportPayloadById,
-  getHistoricalMeasurementPayloadById, getChartCachePayloadById
+  getHistoricalMeasurementPayloadById, getChartGenerationJobPayloadById, getChartCachePayloadById
 };
