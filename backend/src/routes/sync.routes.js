@@ -3,6 +3,7 @@ const env = require('../config/env');
 const coordinator = require('../services/sync-coordinator.service');
 const applyService = require('../services/sync-apply.service');
 const syncWorker = require('../services/sync-worker');
+const syncEventService = require('../services/sync-event.service');
 const { requireAuth } = require('../services/auth.service');
 
 const router = express.Router();
@@ -78,6 +79,13 @@ router.get('/status', requireAuth, async (_req, res, next) => {
 
 router.post('/run-now', requireAuth, async (_req, res, next) => {
   try { res.json(await syncWorker.runCycle()); } catch (error) { next(error); }
+});
+
+router.post('/backfill', requireAuth, async (req, res, next) => {
+  try {
+    const dryRun = req.body?.dry_run !== false;
+    res.json(await syncEventService.backfillExistingSyncEvents({ dryRun }));
+  } catch (error) { next(error); }
 });
 
 module.exports = router;

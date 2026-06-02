@@ -25,7 +25,6 @@ const syncRoutes = require('./routes/sync.routes');
 const processingRoutes = require('./routes/processing.routes');
 const chartWorker = require('./services/chart-worker.service');
 const syncWorker = require('./services/sync-worker');
-const syncEventService = require('./services/sync-event.service');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -92,7 +91,6 @@ app.use((error, req, res, next) => {
 
 const start = async () => {
   await clusterStartupService.initialize();
-  await syncEventService.backfillExistingSyncEvents().catch((error) => console.error('[sync] backfill inicial falhou:', error.message));
   heartbeatService.start();
   chartWorker.start();
   syncWorker.start();
