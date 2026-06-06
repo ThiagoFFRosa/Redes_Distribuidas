@@ -50,7 +50,6 @@ const applyBootstrapNodes = async (nodes = []) => {
     }, { skipSyncEvent: true, reason: 'bootstrap' });
   }
   await repo.enforceSingleSelf();
-  await ensureSyncTopology();
 };
 
 const sanitizeResponseBody = (data) => {
@@ -60,36 +59,6 @@ const sanitizeResponseBody = (data) => {
   delete clone.sessionSecret;
   delete clone.secret;
   return clone;
-};
-
-
-const ensureSyncTopology = async () => {
-  const self = await repo.getSelfNode();
-  if (!self?.node_uuid) return { ensured: 0 };
-  const nodes = await repo.getExternalNodes();
-  let ensured = 0;
-  for (const node of nodes) {
-    if (!node.node_uuid || node.node_uuid === self.node_uuid) continue;
-    await pool.execute(
-      `INSERT INTO sync_node_cursors (remote_node_uuid, last_seen_event_created_at, last_sync_at, last_error)
-       VALUES (?, NULL, NULL, NULL)
-       ON DUPLICATE KEY UPDATE remote_node_uuid=VALUES(remote_node_uuid)`,
-      [node.node_uuid]
-    );
-    await pool.execute(
-      `INSERT IGNORE INTO sync_event_deliveries (event_uuid, target_node_uuid, status)
-       SELECT se.event_uuid, ?, 'PENDING'
-         FROM sync_events se
-        WHERE se.source_node_uuid = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM sync_event_deliveries d
-             WHERE d.event_uuid = se.event_uuid AND d.target_node_uuid = ?
-          )`,
-      [node.node_uuid, self.node_uuid, node.node_uuid]
-    );
-    ensured += 1;
-  }
-  return { ensured };
 };
 
 const requestJson = async (url, options = {}, timeoutMs = 10000) => {
@@ -450,14 +419,12 @@ const runFullBootstrap = async (runId, hostUrl) => {
       for (let offset = 0; offset < entityTotal; offset += 500) {
         const exported = await requestJson(`${hostUrl}/api/sync/bootstrap/export?entity_type=${encodeURIComponent(table)}&offset=${offset}&limit=500`);
         await applyBootstrapItems(table, exported.items || [], identity.node_uuid || crypto.randomUUID());
-        if (table === 'cluster_nodes') await ensureSyncTopology();
         processed += exported.items?.length || 0;
         const percent = total ? Math.min(100, (processed / total) * 100) : 100;
         await updateBootstrapRun(runId, { processed_items: processed, progress_percent: percent });
         if (table === 'historical_measurements' || exported.items?.length) logger.info(`[bootstrap] ${table} ${Math.min(offset + (exported.items?.length || 0), entityTotal)}/${entityTotal}`);
       }
     }
-    await ensureSyncTopology();
     let since = manifest.server_time;
     let lastSeen = since;
     while (true) {
@@ -481,11 +448,6 @@ const runFullBootstrap = async (runId, hostUrl) => {
 const startFullBootstrap = async ({ host_url }) => {
   const baseUrl = normalizeUrl(host_url)?.replace(/\/+$/, '');
   if (!baseUrl) throw new Error('host_url obrigatório');
-  const [[running]] = await pool.execute(
-    "SELECT * FROM bootstrap_runs WHERE host_url=? AND status='RUNNING' ORDER BY id DESC LIMIT 1",
-    [baseUrl]
-  );
-  if (running) return { ok: true, message: 'Bootstrap já em execução.', bootstrap_run_id: running.id, already_running: true };
   const [result] = await pool.execute(
     `INSERT INTO bootstrap_runs (host_url, status, started_at) VALUES (?, 'RUNNING', ?)`,
     [baseUrl, nowMysql()]
@@ -537,7 +499,6 @@ const fullBootstrap = async ({ host_url }) => {
   if (!baseUrl) throw new Error('host_url obrigatório');
   const bootstrap = await requestJson(`${baseUrl}/api/cluster/bootstrap`);
   await applyBootstrapNodes(bootstrap.nodes || []);
-  await ensureSyncTopology();
   const identity = bootstrap.self || bootstrap.host || await requestJson(`${baseUrl}/api/cluster/self-identity`);
   let since = null;
   let pulled = 0;
@@ -585,4 +546,4 @@ const getStatus = async () => {
   return { ok: true, self, nodes: result };
 };
 
-module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, startFullBootstrap, getFullBootstrapStatus, getBootstrapManifest, exportBootstrapEntity, getFingerprint, compareFingerprint, getStatus, updateCursor, getCursor, normalizeBaseUrl, getNodeBaseUrl, getNodeSyncTarget, ensureSyncTopology };
+module.exports = { listEvents, pullFromNode, pushToNode, fullBootstrap, startFullBootstrap, getFullBootstrapStatus, getBootstrapManifest, exportBootstrapEntity, getFingerprint, compareFingerprint, getStatus, updateCursor, getCursor, normalizeBaseUrl, getNodeBaseUrl, getNodeSyncTarget };

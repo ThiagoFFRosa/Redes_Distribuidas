@@ -780,32 +780,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('refresh-join-requests-btn')?.addEventListener('click', loadJoinRequests);
 
-
-    const pollJoinApproval = async (hostUrl, feedback) => {
-        const maxAttempts = 60;
-        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 3000 : 5000));
-            try {
-                const data = await apiFetch('/api/cluster/request-join-host/status', { method:'POST', body: JSON.stringify({ host_url: hostUrl }) });
-                if (data.status === 'APPROVED' || data.bootstrap_required) {
-                    feedback.textContent = data.message || 'Servidor aprovado. Sincronização inicial necessária. Bootstrap iniciado.';
-                    feedback.className = 'text-sm mt-3 text-green-600';
-                    await fetchClusterNodes();
-                    renderServidores();
-                    initCards();
-                    return data;
-                }
-                feedback.textContent = data.message || 'Solicitação pendente. Aguardando aprovação no host...';
-                feedback.className = 'text-sm mt-3 text-slate-600';
-            } catch (error) {
-                console.warn('[join-request] falha ao consultar status:', error);
-            }
-        }
-        feedback.textContent = 'Solicitação enviada. Status ainda PENDING; atualize ou consulte novamente após a aprovação no host.';
-        feedback.className = 'text-sm mt-3 text-amber-600';
-        return null;
-    };
-
     document.getElementById('form-request-join-host')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const feedback = document.getElementById('join-host-feedback');
@@ -816,9 +790,8 @@ document.addEventListener('DOMContentLoaded', () => {
             await fetchClusterNodes();
             renderServidores();
             initCards();
-            feedback.textContent = data.message || 'Solicitação enviada. Status PENDING; aguardando aprovação no host...';
-            feedback.className = data.status === 'PENDING' ? 'text-sm mt-3 text-slate-600' : 'text-sm mt-3 text-green-600';
-            if (data.status === 'PENDING') pollJoinApproval(payload.host_url, feedback);
+            feedback.textContent = data.message || 'Solicitação enviada. Aguarde aprovação no host.';
+            feedback.className = 'text-sm mt-3 text-green-600';
         } catch (error) {
             feedback.textContent = error.message || 'Falha ao enviar solicitação.';
             feedback.className = 'text-sm mt-3 text-red-600';

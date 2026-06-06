@@ -1,5 +1,4 @@
 const path = require('path');
-const net = require('net');
 const express = require('express');
 const session = require('express-session');
 
@@ -90,131 +89,18 @@ app.use((error, req, res, next) => {
   return res.status(500).json({ ok: false, error: 'Erro interno do servidor.' });
 });
 
-const listen = (port, host, callback) => {
-  if (host) return app.listen(port, host, callback);
-  return app.listen(port, callback);
-};
-
-const checkPortAvailable = (port, host = env.host) => new Promise((resolve) => {
-  const tester = net.createServer()
-    .once('error', (error) => {
-      resolve({ available: false, error });
-    })
-    .once('listening', () => {
-      tester.close(() => resolve({ available: true }));
-    });
-
-  if (host) tester.listen(port, host);
-  else tester.listen(port);
-});
-
-const isAutoPortFallbackEnabled = () => {
-  if (!env.autoPortFallback) return false;
-  if (String(env.nodeEnv).toLowerCase() === 'production') {
-    console.warn('[server] AUTO_PORT_FALLBACK=true ignorado em produção. Configure outra porta explicitamente.');
-    return false;
-  }
-  return true;
-};
-
-const resolveStartupPort = async (preferredPort) => {
-  const initialCheck = await checkPortAvailable(preferredPort);
-  if (initialCheck.available) return { port: preferredPort, blocked: false };
-
-  if (initialCheck.error?.code !== 'EADDRINUSE') return { port: preferredPort, blocked: false };
-
-  if (!isAutoPortFallbackEnabled()) return { port: preferredPort, blocked: true };
-
-  for (let candidatePort = preferredPort + 1; candidatePort <= preferredPort + 10; candidatePort += 1) {
-    console.warn(`[server] porta ${candidatePort - 1} ocupada. Tentando ${candidatePort}...`);
-    const candidateCheck = await checkPortAvailable(candidatePort);
-    if (candidateCheck.available) return { port: candidatePort, blocked: false };
-    if (candidateCheck.error?.code !== 'EADDRINUSE') return { port: candidatePort, blocked: false };
-  }
-
-  console.error(`[server] não foi possível encontrar porta livre entre ${preferredPort} e ${preferredPort + 10}.`);
-  return { port: preferredPort, blocked: true };
-};
-
-const buildLocalPublicUrl = (selfNode, port) => {
-  const hostIp = selfNode?.tailscale_ip || '127.0.0.1';
-  return `http://${hostIp}:${port}`;
-};
-
-const updateSelfNodePortIfNeeded = async (port, preferredPort) => {
-  if (port === preferredPort) return;
-
-  const selfNode = await repo.getSelfNode();
-  if (!selfNode) return;
-
-  const publicUrl = buildLocalPublicUrl(selfNode, port);
-  if (Number(selfNode.port) === Number(port) && selfNode.public_url === publicUrl) return;
-
-  await repo.updateNodeStructuralData(selfNode.id, {
-    port,
-    public_url: publicUrl
-  }, { reason: 'auto-port-fallback' });
-  console.log(`[server] cluster_nodes atualizado para porta ${port}: ${publicUrl}`);
-};
-
-const printPortInUseHelp = (port) => {
-  console.error(`[server] porta ${port} já está ocupada.`);
-  console.error('[server] isso não é erro do ngrok; é conflito local de porta.');
-  console.error('[server] provavelmente já existe outro backend rodando.');
-  console.error('[server] encerre o processo antigo ou configure outra porta no .env.');
-  console.error(`[server] Linux: sudo lsof -i :${port}`);
-  console.error(`[server] Linux: sudo ss -ltnp | grep :${port}`);
-  console.error('[server] Para matar no Linux: kill -9 PID');
-  console.error('[server] Se estiver usando PM2: pm2 list; pm2 stop all; pm2 delete all');
-  console.error(`[server] Windows: netstat -ano | findstr :${port}`);
-  console.error('[server] Windows: taskkill /PID <PID> /F');
-};
-
 const start = async () => {
-  const preferredPort = env.port;
-  const startupPort = await resolveStartupPort(preferredPort);
-  const { port } = startupPort;
-
-  if (startupPort.blocked) {
-    printPortInUseHelp(port);
-    process.exit(1);
-  }
-
-  if (port !== preferredPort) env.port = port;
-
-  await clusterStartupService.initialize({ port });
+  await clusterStartupService.initialize();
   heartbeatService.start();
   chartWorker.start();
   syncWorker.start();
-
-  const server = listen(port, env.host, () => {
-    (async () => {
-      const selfNode = await repo.getSelfNode();
-      const display = selfNode?.node_name || 'server';
-      const hostIp = selfNode?.tailscale_ip || '127.0.0.1';
-      const localHost = env.host || 'localhost';
-
-      await updateSelfNodePortIfNeeded(port, preferredPort);
-      console.log(`Custom NewTab API running on http://${localHost}:${port}`);
-      console.log(`[${display}] rodando em http://${hostIp}:${port} (porta ${port})`);
-    })().catch((error) => {
-      console.error('[server] erro após iniciar servidor:', error);
-      process.exit(1);
-    });
-  });
-
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      printPortInUseHelp(port);
-      process.exit(1);
-    }
-
-    console.error('[server] erro ao iniciar servidor:', err);
-    process.exit(1);
+  app.listen(env.port, async () => {
+    console.log(`Custom NewTab API running on http://localhost:${env.port}`);
+    const selfNode = await repo.getSelfNode();
+    const display = selfNode?.node_name || 'server';
+    const hostIp = selfNode?.tailscale_ip || '127.0.0.1';
+    console.log(`[${display}] rodando em http://${hostIp}:${env.port} (porta ${env.port})`);
   });
 };
 
-start().catch((error) => {
-  console.error('[server] erro durante inicialização:', error);
-  process.exit(1);
-});
+start();

@@ -76,25 +76,6 @@ const normalizeNodePublicUrl = (node = {}) => {
   return node.tailscale_ip ? `http://${String(node.tailscale_ip).trim()}:${port}` : null;
 };
 
-
-const buildJoinApprovalPayload = async (request) => {
-  const host = await repo.getSelfNode();
-  const hostUrl = normalizeNodePublicUrl(host || {});
-  return {
-    ok: true,
-    status: request.status,
-    host: host ? serializeClusterNode(host) : null,
-    bootstrap_required: request.status === 'APPROVED',
-    bootstrap: request.status === 'APPROVED' ? { required: true, host_url: hostUrl } : { required: false, host_url: null }
-  };
-};
-
-const requireClusterSecret = (req, res, next) => {
-  const secret = req.header('x-cluster-secret') || req.query.session_secret;
-  if (!env.sessionSecret || secret !== env.sessionSecret) return res.status(403).json({ ok: false, message: 'Secret inválido.' });
-  return next();
-};
-
 const serializeClusterNode = (node = {}) => ({
   id: node.id,
   node_uuid: node.node_uuid || null,
@@ -205,18 +186,6 @@ router.post('/join-request', async (req, res) => {
 });
 
 
-
-router.get('/join-request/status', requireClusterSecret, async (req, res) => {
-  const requesterNodeUuid = String(req.query.requester_node_uuid || '').trim();
-  const requesterTailscaleIp = String(req.query.tailscale_ip || '').trim();
-  if (!requesterNodeUuid && !requesterTailscaleIp) {
-    return res.status(400).json({ ok: false, message: 'requester_node_uuid ou tailscale_ip é obrigatório.' });
-  }
-  const request = await repo.findJoinRequestByRequester({ node_uuid: requesterNodeUuid, tailscale_ip: requesterTailscaleIp });
-  if (!request) return res.status(404).json({ ok: false, status: 'NOT_FOUND', message: 'Solicitação não encontrada.' });
-  return res.json(await buildJoinApprovalPayload(request));
-});
-
 router.get('/self-identity', async (_req, res) => {
   const self = await repo.getSelfNode();
   if (!self) return res.status(404).json({ ok: false, message: 'Servidor self não configurado.' });
@@ -305,14 +274,7 @@ router.post('/join-requests/:id/approve', async (req, res) => {
   logger.info('[join-request] servidor salvo em cluster_nodes');
   await repo.approveJoinRequest(id, node.id);
   logger.info('[join-request] solicitação aprovada');
-  const host = await repo.getSelfNode();
-  res.json({
-    ok: true,
-    status: 'APPROVED',
-    message: 'Servidor aprovado.',
-    node: serializeClusterNode(node),
-    bootstrap: { required: true, host_url: normalizeNodePublicUrl(host || {}) }
-  });
+  res.json({ ok: true, node: serializeClusterNode(node) });
 });
 
 router.post('/join-requests/:id/reject', async (req, res) => {
@@ -328,10 +290,6 @@ router.post('/request-join-host', async (req, res) => {
 
   const self = await repo.getSelfNode();
   if (!self) return res.status(400).json({ ok: false, message: 'Configure este servidor antes de solicitar entrada em um cluster.' });
-  if (self.role === 'HOST') {
-    logger.info('[request-join-host] ignorado: servidor local é HOST e não deve solicitar entrada em outro host');
-    return res.status(409).json({ ok: false, message: 'Servidor local é HOST e não deve solicitar entrada em outro host.' });
-  }
 
   const normalizedHostUrl = normalizeUrl(host_url);
   if (!normalizedHostUrl) return res.status(400).json({ ok: false, message: 'host_url inválida.' });
@@ -373,31 +331,6 @@ router.post('/request-join-host', async (req, res) => {
   } catch (error) {
     logger.error(`[request-join-host] erro ao conectar no host: ${error.message}`);
     return res.status(502).json({ ok: false, message: 'Falha ao conectar no host informado.' });
-  }
-});
-
-
-router.post('/request-join-host/status', async (req, res) => {
-  const { host_url } = req.body || {};
-  if (!env.sessionSecret) return res.status(500).json({ ok: false, message: 'SESSION_SECRET não configurado localmente.' });
-  const self = await repo.getSelfNode();
-  if (!self) return res.status(400).json({ ok: false, message: 'Configure este servidor antes de consultar a aprovação.' });
-  const normalizedHostUrl = normalizeUrl(host_url);
-  if (!normalizedHostUrl) return res.status(400).json({ ok: false, message: 'host_url inválida.' });
-
-  try {
-    const statusUrl = `${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/join-request/status?requester_node_uuid=${encodeURIComponent(self.node_uuid || '')}&tailscale_ip=${encodeURIComponent(self.tailscale_ip || '')}`;
-    const response = await fetch(statusUrl, { headers: { 'X-Cluster-Secret': env.sessionSecret } });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) return res.status(response.status).json(data);
-    if (data.status === 'APPROVED' || data.bootstrap_required) {
-      const bootstrapRun = await syncCoordinator.startFullBootstrap({ host_url: data.bootstrap?.host_url || normalizedHostUrl });
-      return res.json({ ...data, message: 'Servidor aprovado. Sincronização inicial necessária.', bootstrap: { ...(data.bootstrap || {}), ...bootstrapRun, required: true } });
-    }
-    return res.json(data);
-  } catch (error) {
-    logger.error(`[request-join-host] erro ao consultar aprovação no host: ${error.message}`);
-    return res.status(502).json({ ok: false, message: 'Falha ao consultar aprovação no host informado.' });
   }
 });
 

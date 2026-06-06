@@ -288,19 +288,6 @@ class ClusterNodeRepository {
     return rows;
   }
 
-
-  async findJoinRequestByRequester({ node_uuid, tailscale_ip }) {
-    if (node_uuid) {
-      const [rows] = await db.execute('SELECT * FROM cluster_join_requests WHERE node_uuid = ? ORDER BY created_at DESC LIMIT 1', [node_uuid]);
-      if (rows[0]) return rows[0];
-    }
-    if (tailscale_ip) {
-      const [rows] = await db.execute('SELECT * FROM cluster_join_requests WHERE tailscale_ip = ? ORDER BY created_at DESC LIMIT 1', [tailscale_ip]);
-      if (rows[0]) return rows[0];
-    }
-    return null;
-  }
-
   async findJoinRequestById(id) {
     const [rows] = await db.execute('SELECT * FROM cluster_join_requests WHERE id = ? LIMIT 1', [id]);
     return rows[0] || null;
