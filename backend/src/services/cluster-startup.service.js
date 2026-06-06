@@ -4,7 +4,8 @@ const ngrokService = require('./ngrok.service');
 const healthService = require('./cluster-health.service');
 
 class ClusterStartupService {
-  async initialize() {
+  async initialize(options = {}) {
+    const localPort = options.port || env.port;
     console.log('[cluster-db] carregando configuração local do banco...');
     const selfNode = await repo.getSelfNode();
 
@@ -36,7 +37,7 @@ class ClusterStartupService {
     if (selfNode.role === 'HOST') {
       console.log('[cluster-db] servidor local configurado como HOST');
       console.log('[ngrok] iniciando túnel...');
-      await ngrokService.startTunnelWithRetry(env.port);
+      await ngrokService.startTunnelWithRetry(localPort);
       return { startedNgrok: Boolean(ngrokService.getPublicUrl()), selfNode };
     }
 

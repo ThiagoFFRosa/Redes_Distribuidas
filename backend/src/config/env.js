@@ -21,6 +21,9 @@ const parsePositiveInteger = (value, fallback) => {
 
 module.exports = {
   port: parseNumber(process.env.PORT, 4178),
+  host: (process.env.HOST || '').trim() || undefined,
+  autoPortFallback: parseBoolean(process.env.AUTO_PORT_FALLBACK, false),
+  nodeEnv: process.env.NODE_ENV || 'development',
   serverName: process.env.SERVER_NAME || 'server_a',
   serverUrl: process.env.SERVER_URL || 'http://127.0.0.1:4178',
   logLevel: process.env.LOG_LEVEL || 'info',
