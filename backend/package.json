@@ -8,7 +8,9 @@
     "dev": "node src/server.js",
     "migrate": "node src/database/migrate.js",
     "migrate:seed": "node src/database/seed.js",
-    "migrate:clear": "node src/database/clear.js"
+    "migrate:clear": "node src/database/clear.js",
+    "sync:diagnose-duplicates": "node scripts/sync-diagnose-duplicates.js",
+    "sync:merge-data-points": "node scripts/sync-merge-data-points.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

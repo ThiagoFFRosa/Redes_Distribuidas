@@ -469,7 +469,7 @@ const getFingerprint = async () => {
       SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', node_uuid, node_name, tailscale_ip, public_url, port, role, power_score, structural_version, COALESCE(metadata,'')) ORDER BY node_uuid SEPARATOR '#'),''), 256) AS checksum
       FROM cluster_nodes`,
     data_points: `SELECT COUNT(*) AS count, MAX(updated_at) AS latest_at,
-      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', uuid, name, type, latitude, longitude, city_region, status, normal_level, warning_level, critical_level, measurement_unit) ORDER BY uuid SEPARATOR '#'),''), 256) AS checksum
+      SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', uuid, COALESCE(source_key,''), name, type, latitude, longitude, city_region, status, normal_level, warning_level, critical_level, measurement_unit) ORDER BY uuid SEPARATOR '#'),''), 256) AS checksum
       FROM data_points`,
     measurements: `SELECT COUNT(*) AS count, MAX(m.created_at) AS latest_at,
       SHA2(COALESCE(GROUP_CONCAT(CONCAT_WS('|', m.uuid, dp.uuid, m.measurement_type, m.value, m.unit, m.measured_at, m.source, COALESCE(m.observation,'')) ORDER BY m.uuid SEPARATOR '#'),''), 256) AS checksum

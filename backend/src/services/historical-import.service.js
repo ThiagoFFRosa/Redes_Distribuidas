@@ -102,12 +102,26 @@ const ensureDataPoint = async (fields, file, userId) => {
     missingError: 'Coordenadas ausentes no CSV',
     invalidError: 'Coordenadas inválidas no CSV'
   });
+  const cityRegion = String(fields.city_region || '').trim() || null;
+  const sourceKey = String(fields.source_key || fields.external_key || '').trim()
+    || dataPointRepository.buildCsvSourceKey({ name, city_region: cityRegion, type: 'RIVER_LEVEL' });
+  const existingBySourceKey = await dataPointRepository.findBySourceKey(sourceKey);
+  if (existingBySourceKey) {
+    console.log(`[historical-import] reutilizando data_point existente por source_key=${sourceKey} uuid=${existingBySourceKey.uuid}`);
+    return existingBySourceKey;
+  }
+  const existingByNaturalKey = await dataPointRepository.findByNaturalKey({ name, city_region: cityRegion, type: 'RIVER_LEVEL' });
+  if (existingByNaturalKey) {
+    console.log(`[historical-import] reutilizando data_point existente por chave natural source_key=${sourceKey} uuid=${existingByNaturalKey.uuid}`);
+    return dataPointRepository.assignSourceKey(existingByNaturalKey.id, sourceKey);
+  }
   const payload = {
+    source_key: sourceKey,
     name,
     type: 'RIVER_LEVEL',
     latitude: location.latitude,
     longitude: location.longitude,
-    city_region: String(fields.city_region || '').trim() || null,
+    city_region: cityRegion,
     location_status: location.location_status,
     location_error: missingCoordinates ? 'Coordenadas ausentes no CSV' : (invalidCoordinates ? 'Coordenadas inválidas no CSV' : location.location_error),
     description: 'Criado automaticamente por importação histórica CSV.',
