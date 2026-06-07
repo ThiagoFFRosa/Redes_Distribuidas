@@ -18,6 +18,46 @@ const asDateOnly = (value) => {
 };
 const eventTime = (event) => asDate(event.created_at) || nowMysql();
 
+const normalizeNaturalPart = (value) => String(value || '').trim().toLowerCase();
+
+const findEquivalentDataPoint = async (connection, payload) => {
+  if (!payload) return null;
+  if (payload.source_key) {
+    const [[bySourceKey]] = await connection.execute('SELECT * FROM data_points WHERE source_key=? LIMIT 1', [payload.source_key]);
+    if (bySourceKey) return { ...bySourceKey, match: 'source_key' };
+  }
+  if (payload.name) {
+    const [[byNaturalKey]] = await connection.execute(
+      `SELECT * FROM data_points
+        WHERE LOWER(TRIM(name))=?
+          AND COALESCE(LOWER(TRIM(city_region)), '')=?
+          AND type=?
+        ORDER BY id ASC LIMIT 1`,
+      [normalizeNaturalPart(payload.name), normalizeNaturalPart(payload.city_region), payload.type || 'RIVER_LEVEL']
+    );
+    if (byNaturalKey) return { ...byNaturalKey, match: 'natural_key' };
+  }
+  return null;
+};
+
+const reassignDataPointUuidForBootstrap = async (connection, existing, payload) => {
+  logger.warn(`[sync-apply] data_point uuid conflict bootstrap: match=${existing.match || '-'} local_uuid=${existing.uuid} host_uuid=${payload.uuid}; preservando UUID do HOST`);
+  await connection.execute('UPDATE data_points SET uuid=?, source_key=COALESCE(source_key, ?) WHERE id=?', [payload.uuid, payload.source_key || null, existing.id]);
+};
+
+const findChartCacheUuidMismatch = async (connection, payload) => {
+  if (payload.source_job_uuid) {
+    const [[jobPoint]] = await connection.execute(
+      `SELECT dp.uuid, dp.name, dp.city_region, dp.source_key
+         FROM chart_generation_jobs cj JOIN data_points dp ON dp.id=cj.data_point_id
+        WHERE cj.uuid=? LIMIT 1`,
+      [payload.source_job_uuid]
+    );
+    if (jobPoint && jobPoint.uuid !== payload.data_point_uuid) return { ...jobPoint, match: 'source_job_uuid' };
+  }
+  return null;
+};
+
 const findIdByUuid = async (connection, table, uuid) => {
   if (!uuid) return null;
   const [[row]] = await connection.execute(`SELECT id FROM ${table} WHERE uuid=? LIMIT 1`, [uuid]);
@@ -99,15 +139,29 @@ const upsertClusterNode = async (event, c) => {
 const upsertDataPoint = async (event, c) => {
   const p = event.payload || {};
   if (!p.uuid) throw new Error('data_point sem uuid');
-  if (await shouldSkipOlder(c, 'data_points', p.uuid, eventTime(event))) return 'skipped_older';
+  const [[existingByUuid]] = await c.execute('SELECT id FROM data_points WHERE uuid=? LIMIT 1', [p.uuid]);
+  let reassignedBootstrapUuid = false;
+  if (!existingByUuid) {
+    const equivalent = await findEquivalentDataPoint(c, p);
+    if (equivalent && equivalent.uuid !== p.uuid) {
+      if (event.source_mode === 'BOOTSTRAP') {
+        await reassignDataPointUuidForBootstrap(c, equivalent, p);
+        reassignedBootstrapUuid = true;
+      } else {
+        logger.error(`[sync-apply] data_point uuid conflict: incoming_uuid=${p.uuid} local_equivalent_uuid=${equivalent.uuid} match=${equivalent.match || '-'} source_key=${p.source_key || '-'}`);
+        throw new Error(`data_point uuid conflict: incoming=${p.uuid} local=${equivalent.uuid}`);
+      }
+    }
+  }
+  if (!reassignedBootstrapUuid && await shouldSkipOlder(c, 'data_points', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
-    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE name=VALUES(name), type=VALUES(type), latitude=VALUES(latitude), longitude=VALUES(longitude), city_region=VALUES(city_region),
+    `INSERT INTO data_points (uuid, source_key, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE source_key=COALESCE(VALUES(source_key), source_key), name=VALUES(name), type=VALUES(type), latitude=VALUES(latitude), longitude=VALUES(longitude), city_region=VALUES(city_region),
        location_status=VALUES(location_status), location_error=VALUES(location_error), description=VALUES(description), status=VALUES(status), normal_level=VALUES(normal_level), warning_level=VALUES(warning_level), critical_level=VALUES(critical_level), measurement_unit=VALUES(measurement_unit)`,
-    [p.uuid, p.name, p.type || 'RIVER_LEVEL', p.latitude ?? null, p.longitude ?? null, p.city_region || null, p.location_status || ((p.latitude == null || p.longitude == null) ? 'NEEDS_REVIEW' : 'VALID'), p.location_error || null, p.description || null, p.status || 'ACTIVE', p.normal_level ?? null, p.warning_level ?? null, p.critical_level ?? null, p.measurement_unit || 'm']
+    [p.uuid, p.source_key || null, p.name, p.type || 'RIVER_LEVEL', p.latitude ?? null, p.longitude ?? null, p.city_region || null, p.location_status || ((p.latitude == null || p.longitude == null) ? 'NEEDS_REVIEW' : 'VALID'), p.location_error || null, p.description || null, p.status || 'ACTIVE', p.normal_level ?? null, p.warning_level ?? null, p.critical_level ?? null, p.measurement_unit || 'm']
   );
-  logger.info(`[sync-apply] data_point APPLIED uuid=${p.uuid} name=${p.name || '-'}`);
+  logger.info(`[sync-apply] data_point APPLIED uuid=${p.uuid} source_key=${p.source_key || '-'} name=${p.name || '-'}`);
   return 'applied';
 };
 
@@ -115,7 +169,7 @@ const upsertMeasurement = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   if (!p.uuid) throw new Error('measurement sem uuid');
-  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
+  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point', message: `missing data_point_uuid=${p.data_point_uuid || '-'}` };
   await c.execute(
     `INSERT INTO measurements (uuid, data_point_id, measurement_type, value, unit, measured_at, source, observation)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -129,7 +183,7 @@ const upsertAlert = async (event, c) => {
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   const measurementId = await findIdByUuid(c, 'measurements', p.measurement_uuid);
   if (!p.uuid) throw new Error('alert sem uuid');
-  if (!dataPointId || (p.measurement_uuid && !measurementId)) return { status: 'deferred', reason: 'missing_dependency' };
+  if (!dataPointId || (p.measurement_uuid && !measurementId)) return { status: 'deferred', reason: 'missing_dependency', message: `missing data_point_uuid=${p.data_point_uuid || '-'} measurement_uuid=${p.measurement_uuid || '-'}` };
   if (await shouldSkipOlder(c, 'alerts', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
     `INSERT INTO alerts (uuid, data_point_id, measurement_id, alert_type, severity, current_value, unit, message, status, detected_at, resolved_at)
@@ -159,7 +213,7 @@ const upsertHistoricalMeasurement = async (event, c) => {
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   const importId = await findIdByUuid(c, 'historical_imports', p.import_uuid);
   if (!p.uuid) throw new Error('historical_measurement sem uuid');
-  if (!dataPointId || (p.import_uuid && !importId)) return { status: 'deferred', reason: 'missing_dependency' };
+  if (!dataPointId || (p.import_uuid && !importId)) return { status: 'deferred', reason: 'missing_dependency', message: `missing data_point_uuid=${p.data_point_uuid || '-'} import_uuid=${p.import_uuid || '-'}` };
   await c.execute(
     `INSERT INTO historical_measurements (uuid, data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value, source)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -173,7 +227,7 @@ const upsertChartGenerationJob = async (event, c) => {
   const p = event.payload || {};
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   if (!p.uuid) throw new Error('chart_generation_job sem uuid');
-  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point' };
+  if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point', message: `missing data_point_uuid=${p.data_point_uuid || '-'}` };
   const requestedRows = p.requested_by_node_uuid
     ? await c.execute('SELECT id FROM cluster_nodes WHERE node_uuid=? LIMIT 1', [p.requested_by_node_uuid])
     : [[]];
@@ -183,7 +237,7 @@ const upsertChartGenerationJob = async (event, c) => {
   const requestedNode = requestedRows[0][0] || null;
   const assignedNode = assignedRows[0][0] || null;
   if ((p.requested_by_node_uuid && !requestedNode) || (p.assigned_to_node_uuid && !assignedNode)) {
-    return { status: 'deferred', reason: 'missing_cluster_node' };
+    return { status: 'deferred', reason: 'missing_cluster_node', message: `missing cluster_node requested=${p.requested_by_node_uuid || '-'} assigned=${p.assigned_to_node_uuid || '-'}` };
   }
   if (await shouldSkipOlder(c, 'chart_generation_jobs', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
@@ -210,8 +264,13 @@ const upsertChartCache = async (event, c) => {
   const dataPointId = await findIdByUuid(c, 'data_points', p.data_point_uuid);
   if (!p.uuid) throw new Error('chart_cache sem uuid');
   if (!dataPointId) {
-    console.log(`[sync-apply] chart_cache DEFERRED_MISSING_DEPENDENCY uuid=${p.uuid} data_point_uuid=${p.data_point_uuid || '-'}`);
-    return { status: 'deferred', reason: 'missing_data_point' };
+    const mismatch = await findChartCacheUuidMismatch(c, p);
+    if (mismatch) {
+      logger.error(`[sync-apply] chart_cache dependency uuid mismatch: cache data_point_uuid=${p.data_point_uuid || '-'}, local equivalent uuid=${mismatch.uuid} match=${mismatch.match}`);
+      return { status: 'deferred', reason: 'data_point_uuid_mismatch', message: `chart_cache dependency uuid mismatch cache=${p.data_point_uuid || '-'} local=${mismatch.uuid}` };
+    }
+    logger.warn(`[sync-apply] chart_cache DEFERRED_MISSING_DEPENDENCY uuid=${p.uuid} data_point_uuid=${p.data_point_uuid || '-'}`);
+    return { status: 'deferred', reason: 'missing_data_point', message: `missing data_point_uuid=${p.data_point_uuid || '-'}` };
   }
   if (await shouldSkipOlder(c, 'chart_cache', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
@@ -301,7 +360,8 @@ const applySyncEvents = async (events = [], options = {}) => {
           entity_type: event?.entity_type || null,
           entity_key: event?.entity_key || event?.payload?.uuid || event?.payload?.node_uuid || null,
           status,
-          reason: result?.reason || null
+          reason: result?.reason || null,
+          message: result?.message || null
         });
       } catch (error) {
         await connection.rollback().catch(() => {});

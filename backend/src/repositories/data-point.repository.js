@@ -6,6 +6,18 @@ const { hasValidCoordinates } = require('../utils/coordinates');
 
 const toNullableNumber = (value) => (value == null ? null : Number(value));
 
+const normalizeSourcePart = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '');
+
+const buildCsvSourceKey = ({ name, city_region: cityRegion, type = 'RIVER_LEVEL' } = {}) => (
+  `csv:${normalizeSourcePart(name)}:${normalizeSourcePart(cityRegion || 'unknown')}:${normalizeSourcePart(type || 'RIVER_LEVEL')}`
+);
+
 const toApi = (row) => row && ({
   ...row,
   latitude: row.latitude == null ? null : Number(row.latitude),
@@ -54,6 +66,36 @@ const findById = async (id) => {
   return toApi(rows[0]);
 };
 
+const findByUuid = async (uuid) => {
+  if (!uuid) return null;
+  const [rows] = await pool.execute('SELECT * FROM data_points WHERE uuid = ? LIMIT 1', [uuid]);
+  return toApi(rows[0]);
+};
+
+const findBySourceKey = async (sourceKey) => {
+  if (!sourceKey) return null;
+  const [rows] = await pool.execute('SELECT * FROM data_points WHERE source_key = ? ORDER BY id ASC LIMIT 1', [sourceKey]);
+  return toApi(rows[0]);
+};
+
+const findByNaturalKey = async ({ name, city_region: cityRegion, type = 'RIVER_LEVEL' } = {}) => {
+  if (!name) return null;
+  const [rows] = await pool.execute(
+    `SELECT * FROM data_points
+      WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+        AND COALESCE(LOWER(TRIM(city_region)), '') = COALESCE(LOWER(TRIM(?)), '')
+        AND type = ?
+      ORDER BY id ASC LIMIT 1`,
+    [name, cityRegion || null, type || 'RIVER_LEVEL']
+  );
+  return toApi(rows[0]);
+};
+
+const assignSourceKey = async (id, sourceKey) => {
+  if (!id || !sourceKey) return findById(id);
+  await pool.execute('UPDATE data_points SET source_key = COALESCE(source_key, ?) WHERE id = ?', [sourceKey, id]);
+  return findById(id);
+};
 
 const findAllWithLatestMeasurement = async () => {
   const [rows] = await pool.execute(
@@ -78,10 +120,11 @@ const findAllWithLatestMeasurement = async () => {
 
 const create = async (payload) => {
   const [result] = await pool.execute(
-    `INSERT INTO data_points (uuid, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO data_points (uuid, source_key, name, type, latitude, longitude, city_region, location_status, location_error, description, status, normal_level, warning_level, critical_level, measurement_unit, created_by_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.uuid || crypto.randomUUID(),
+      payload.source_key || null,
       payload.name,
       payload.type || 'RIVER_LEVEL',
       payload.latitude,
@@ -150,4 +193,4 @@ const countActive = async () => {
   return Number(rows[0]?.total || 0);
 };
 
-module.exports = { findAll, findById, findAllWithLatestMeasurement, create, update, setStatus, countActive };
+module.exports = { findAll, findById, findByUuid, findBySourceKey, findByNaturalKey, assignSourceKey, buildCsvSourceKey, findAllWithLatestMeasurement, create, update, setStatus, countActive };

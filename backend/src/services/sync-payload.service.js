@@ -45,7 +45,7 @@ const reduceChartPayload = (payload) => {
 };
 
 const dataPointPayload = (row) => row && ({
-  uuid: row.uuid, name: row.name, type: row.type, latitude: num(row.latitude), longitude: num(row.longitude),
+  uuid: row.uuid, source_key: row.source_key || null, name: row.name, type: row.type, latitude: num(row.latitude), longitude: num(row.longitude),
   city_region: row.city_region, location_status: row.location_status || 'VALID', location_error: row.location_error || null, description: row.description, status: row.status,
   normal_level: num(row.normal_level), warning_level: num(row.warning_level), critical_level: num(row.critical_level),
   measurement_unit: row.measurement_unit || 'm', created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)

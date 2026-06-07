@@ -197,7 +197,12 @@ const createOrReuseJob = async (dataPoint, importId = null, options = {}) => {
 
   const { selection, assignedNode } = await chooseAssignee();
   const selfNode = selection?.selfNode || null;
-  const [[countRow]] = await pool.execute('SELECT COUNT(*) AS total FROM historical_measurements WHERE data_point_id=?', [dataPoint.id]);
+  const [[countRow]] = await pool.execute(
+    `SELECT COUNT(*) AS total
+       FROM historical_measurements hm JOIN data_points dp ON dp.id=hm.data_point_id
+      WHERE dp.uuid=?`,
+    [dataPoint.uuid]
+  );
   const estimatedSeconds = Math.max(5, Math.ceil(Number(countRow.total || 0) / 5000));
   const jobUuid = crypto.randomUUID();
   const [result] = await pool.execute(
@@ -215,7 +220,7 @@ const createOrReuseJob = async (dataPoint, importId = null, options = {}) => {
     [result.insertId]
   );
   if (!options.silent) {
-    console.log('[chart-worker] job atribuído a', job.assigned_to_node_name || job.assigned_node_name || job.assigned_to_node_uuid || 'local', `job_uuid=${job.uuid}`);
+    console.log('[chart-worker] job atribuído a', job.assigned_to_node_name || job.assigned_node_name || job.assigned_to_node_uuid || 'local', `job_uuid=${job.uuid}`, `data_point_uuid=${dataPoint.uuid}`);
   }
   return { job, reused: false };
 };
@@ -233,6 +238,15 @@ const getHistoricalChart = async (dataPointId) => {
     [dataPoint.uuid, CHART_TYPE]
   );
   let chart = normalizeChart(cacheRows[0]);
+  const [mismatchCacheRows] = chart ? [[]] : await pool.execute(
+    `SELECT uuid, data_point_uuid, source_job_uuid, chart_type, generated_at
+       FROM chart_cache
+      WHERE data_point_id = ? AND chart_type = ? AND data_point_uuid <> ?
+      ORDER BY generated_at DESC, id DESC
+      LIMIT 1`,
+    [dataPoint.id, CHART_TYPE, dataPoint.uuid]
+  );
+  const mismatchCache = mismatchCacheRows?.[0] || null;
   const chartPoints = Number(chart?.points_count || chart?.payload?.datasets?.[0]?.data?.length || 0);
   console.log(`[historical-chart] cache encontrado=${Boolean(chart)}${chart ? ` cache_uuid=${chart.uuid || '-'} points=${chartPoints}` : ` para data_point_uuid=${dataPoint.uuid}`}`);
 
@@ -240,6 +254,20 @@ const getHistoricalChart = async (dataPointId) => {
   const selfNode = await clusterNodeRepository.getSelfNode();
   if (latestJobForResponse) {
     console.log(`[historical-chart] job status=${normalizeStatus(latestJobForResponse.status)} assigned_to=${latestJobForResponse.assigned_to_node_name || latestJobForResponse.assigned_node_name || latestJobForResponse.assigned_to_node_uuid || '-'} self=${selfNode?.node_name || selfNode?.node_uuid || '-'}`);
+  }
+
+  if (mismatchCache) {
+    const message = `Cache de gráfico encontrado para o mesmo ponto local, mas com data_point_uuid divergente (${mismatchCache.data_point_uuid} != ${dataPoint.uuid}). Rode npm run sync:diagnose-duplicates e corrija com sync:merge-data-points em ambiente dev.`;
+    console.error(`[historical-chart] UUID_MISMATCH point_id=${dataPoint.id} data_point_uuid=${dataPoint.uuid} cache_uuid=${mismatchCache.uuid} cache_data_point_uuid=${mismatchCache.data_point_uuid}`);
+    return {
+      ok: true,
+      status: 'UUID_MISMATCH',
+      data_point: dataPoint,
+      chart: null,
+      cache: { available: false, ...mismatchCache },
+      job: normalizeJob(latestJobForResponse),
+      message
+    };
   }
 
   if (chart?.status === 'READY') {
@@ -334,8 +362,14 @@ const regenerateChart = async (dataPointId, importId = null) => {
 };
 
 const generateChartForJob = async (job, selfNode) => {
-  const dataPointId = job.data_point_id;
   const dataPointUuid = job.data_point_uuid;
+  const [[jobDataPoint]] = await pool.execute('SELECT id, uuid FROM data_points WHERE uuid=? LIMIT 1', [dataPointUuid]);
+  if (!jobDataPoint) throw new Error(`data_point_uuid do job não existe localmente: ${dataPointUuid}`);
+  const dataPointId = jobDataPoint.id;
+  if (Number(job.data_point_id) !== Number(dataPointId)) {
+    console.error(`[chart-worker] job data_point_id mismatch job_uuid=${job.uuid} job_data_point_id=${job.data_point_id} uuid=${dataPointUuid} local_data_point_id=${dataPointId}`);
+  }
+  console.log(`[chart-worker] processando job_uuid=${job.uuid} data_point_uuid=${dataPointUuid}`);
   const selfName = selfNode?.node_name || 'local';
   const selfUuid = selfNode?.node_uuid || null;
   await pool.execute(
@@ -346,8 +380,10 @@ const generateChartForJob = async (job, selfNode) => {
   await createJobSyncEvent(job.id);
 
   const [rows] = await pool.execute(
-    `SELECT measured_at, value FROM historical_measurements WHERE data_point_id=? ORDER BY measured_at ASC`,
-    [dataPointId]
+    `SELECT hm.measured_at, hm.value
+       FROM historical_measurements hm JOIN data_points dp ON dp.id=hm.data_point_id
+      WHERE dp.uuid=? ORDER BY hm.measured_at ASC`,
+    [dataPointUuid]
   );
   await pool.execute('UPDATE chart_generation_jobs SET progress_percent=45 WHERE id=?', [job.id]);
   const total = rows.length;
@@ -414,7 +450,7 @@ const generateChartForJob = async (job, selfNode) => {
   }
 
   console.log(`[chart-worker] job DONE uuid=${job.uuid}`);
-  console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid || '-'} points=${total} source_job_uuid=${job.uuid}`);
+  console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid || '-'} data_point_uuid=${dataPointUuid} points=${total} source_job_uuid=${job.uuid}`);
   return { payload, summary };
 };
 
