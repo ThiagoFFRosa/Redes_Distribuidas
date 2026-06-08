@@ -197,6 +197,9 @@ const importHistoricalCsv = async (req, userId) => {
       `UPDATE historical_imports SET status='IMPORTED', total_rows=?, imported_rows=?, failed_rows=?, completed_at=NOW() WHERE id=?`,
       [totalRows, importedRows, failedRows, importId]
     );
+    await chartService.markChartCacheStale(dataPoint.uuid).catch((error) => {
+      console.warn(`[historical-chart] falha ao marcar cache stale após CSV para data_point_uuid=${dataPoint.uuid}: ${error.message}`);
+    });
     const chartQueued = await chartService.regenerateChart(dataPoint.id, importId);
     const [[historicalImport]] = await pool.execute('SELECT * FROM historical_imports WHERE id=?', [importId]);
     const [[job]] = await pool.execute('SELECT * FROM chart_generation_jobs WHERE id=?', [chartQueued.job.id]);
