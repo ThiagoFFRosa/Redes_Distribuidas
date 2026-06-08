@@ -390,6 +390,17 @@ router.get('/bootstrap', async (req, res) => {
 router.get('/self', allowInitialSelfStatus, handleGetSelf);
 router.post('/self', allowInitialSelfConfig, saveSelfNode);
 
+
+router.post('/ngrok/claim-local', requireAuthOrClusterSecret, async (req, res) => {
+  try {
+    const payload = req.body || {};
+    logger.info(`[ngrok-claim] claim-local solicitado por ${payload.requested_by_node_name || payload.requested_by_node_uuid || 'desconhecido'} reason=${payload.reason || 'remote_request'}`);
+    res.json(await ngrokCoordinator.claimNgrokLocally(payload.reason || 'remote_request'));
+  } catch (error) {
+    res.status(503).json({ ok: false, message: error.message });
+  }
+});
+
 router.post('/ngrok/assume', requireAuthOrClusterSecret, async (req, res) => {
   try { res.json(await ngrokCoordinator.assume(req.body || {})); }
   catch (error) { res.status(503).json({ ok: false, message: error.message }); }

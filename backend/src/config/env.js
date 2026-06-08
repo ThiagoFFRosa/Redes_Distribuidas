@@ -49,6 +49,7 @@ module.exports = {
   publicUrlCheckTimeoutMs: parseNumber(process.env.PUBLIC_URL_CHECK_TIMEOUT_MS, 3000),
   ngrokCheckIntervalMs: parsePositiveInteger(process.env.NGROK_CHECK_INTERVAL_MS, 10000),
   ngrokTakeoverGraceMs: parsePositiveInteger(process.env.NGROK_TAKEOVER_GRACE_MS, 10000),
+  ngrokClaimTimeoutMs: parsePositiveInteger(process.env.NGROK_CLAIM_TIMEOUT_MS, 15000),
   syncBatchSize: parsePositiveInteger(process.env.SYNC_BATCH_SIZE, 100),
   syncMaxPayloadBytes: parsePositiveInteger(process.env.SYNC_MAX_PAYLOAD_BYTES, 512000),
   syncMaxBatchesPerCycle: parsePositiveInteger(process.env.SYNC_MAX_BATCHES_PER_CYCLE, 5),

@@ -5,6 +5,7 @@ class NgrokService {
   constructor() {
     this.publicUrl = null;
     this.running = false;
+    this.lastError = null;
 
     console.log(
       `[ngrok] startup config: ENABLE_NGROK=${env.enableNgrok}, NGROK_DOMAIN=${env.ngrokDomain || '(vazio)'}`
@@ -18,6 +19,7 @@ class NgrokService {
     if (!env.enableNgrok) {
       this.publicUrl = null;
       this.running = false;
+      this.lastError = 'ENABLE_NGROK=false';
       return null;
     }
 
@@ -44,6 +46,7 @@ class NgrokService {
         console.error('[ngrok] erro ao iniciar túnel:', message);
         this.publicUrl = null;
         this.running = false;
+        this.lastError = message;
         return null;
       }
     }
@@ -71,6 +74,7 @@ class NgrokService {
         return this.publicUrl;
       } catch (error) {
         const message = error?.message || 'erro desconhecido';
+        this.lastError = message;
         console.warn(`[ngrok] falha ao iniciar com "${field}": ${message}`);
       }
     }
@@ -81,7 +85,8 @@ class NgrokService {
       // ignora erro de limpeza final
     }
 
-    console.error('[ngrok] não foi possível subir túnel com NGROK_DOMAIN configurado.');
+    const finalMessage = this.lastError ? `não foi possível subir túnel com NGROK_DOMAIN configurado: ${this.lastError}` : 'não foi possível subir túnel com NGROK_DOMAIN configurado.';
+    console.error(`[ngrok] ${finalMessage}`);
     this.publicUrl = null;
     this.running = false;
     return null;
@@ -93,7 +98,10 @@ class NgrokService {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const url = await this.startTunnel(port);
-      if (url) return url;
+      if (url) {
+        this.lastError = null;
+        return url;
+      }
 
       if (attempt < maxAttempts) {
         console.warn(`[ngrok] tentativa ${attempt} falhou. Nova tentativa em ${retryDelayMs / 1000}s...`);
@@ -101,7 +109,7 @@ class NgrokService {
       }
     }
 
-    throw new Error('Falha ao iniciar ngrok após 3 tentativas');
+    throw new Error(`Falha ao iniciar ngrok após ${maxAttempts} tentativas${this.lastError ? `: ${this.lastError}` : ''}`);
   }
 
   async stopTunnel() {
@@ -129,6 +137,10 @@ class NgrokService {
 
   getPublicUrl() {
     return this.publicUrl;
+  }
+
+  getLastError() {
+    return this.lastError;
   }
 }
 
