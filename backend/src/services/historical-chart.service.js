@@ -9,7 +9,7 @@ const { getPointTimeSeries } = require('./point-time-series.service');
 const env = require('../config/env');
 
 const CHART_TYPE = 'HISTORICAL_RIVER_LEVEL';
-const MAX_POINTS = 1000;
+const MAX_POINTS = 1500;
 const FORECAST_MAX_HOURS = 48;
 const SEASONAL_WINDOW_DAYS = 30;
 const ACTIVE_JOB_REUSE_MINUTES = 2;
@@ -155,6 +155,40 @@ const getLatestJob = async (dataPointUuid) => {
   return rows[0] || null;
 };
 
+
+const isSortMemoryError = (error) => error?.code === 'ER_OUT_OF_SORTMEMORY' || error?.errno === 1038;
+
+const getLatestChartCache = async (dataPointUuid, chartType = CHART_TYPE, connection = pool) => {
+  try {
+    const [ids] = await connection.execute(
+      `SELECT id
+         FROM chart_cache
+        WHERE data_point_uuid = ? AND chart_type = ?
+        LIMIT 1`,
+      [dataPointUuid, chartType]
+    );
+    if (!ids.length) return null;
+
+    const [rows] = await connection.execute(
+      `SELECT id, uuid, data_point_id, data_point_uuid, chart_type, status, source_job_uuid,
+              generated_by_node_id, generated_by_node_uuid, generated_by_node_name,
+              total_points, date_start, date_end,
+              payload, payload_json, summary, summary_json, seasonal_analysis_json, forecast_json,
+              error_message, generated_at, created_at, updated_at
+         FROM chart_cache
+        WHERE id = ?
+        LIMIT 1`,
+      [ids[0].id]
+    );
+    return rows[0] || null;
+  } catch (error) {
+    if (isSortMemoryError(error)) {
+      console.error(`[historical-chart] falha controlada ao consultar chart_cache por índice data_point_uuid=${dataPointUuid} chart_type=${chartType}: ${error.message}`);
+    }
+    throw error;
+  }
+};
+
 const findReusableJob = async (dataPointUuid) => {
   const [rows] = await pool.execute(
     `SELECT cj.*, cn.node_name AS assigned_to_node_name
@@ -173,7 +207,7 @@ const findReusableJob = async (dataPointUuid) => {
 
 const normalizeChart = (row) => {
   if (!row) return null;
-  const rawSummary = parseJson(row.summary) || {};
+  const rawSummary = parseJson(row.summary_json) || parseJson(row.summary) || {};
   const summary = {
     ...rawSummary,
     points_count: pointsCountFromSummary(rawSummary, row),
@@ -184,7 +218,7 @@ const normalizeChart = (row) => {
     max_value: rawSummary.max_value ?? rawSummary.max ?? null,
     average_value: rawSummary.average_value ?? rawSummary.avg ?? null
   };
-  const payload = normalizeChartPayload(parseJson(row.payload));
+  const payload = normalizeChartPayload(parseJson(row.payload_json) || parseJson(row.payload));
   const seasonalAnalysis = parseJson(row.seasonal_analysis_json) || payload?.seasonal_analysis || null;
   const forecast = parseJson(row.forecast_json) || payload?.forecast || null;
   return {
@@ -266,14 +300,25 @@ const getHistoricalChart = async (dataPointId) => {
   if (!dataPoint) return null;
   console.log(`[historical-chart] point_id=${dataPoint.id} data_point_uuid=${dataPoint.uuid}`);
 
-  const [cacheRows] = await pool.execute(
-    `SELECT * FROM chart_cache
-      WHERE data_point_uuid = ? AND chart_type = ?
-      ORDER BY generated_at DESC, id DESC
-      LIMIT 1`,
-    [dataPoint.uuid, CHART_TYPE]
-  );
-  let chart = normalizeChart(cacheRows[0]);
+  let cacheRow = null;
+  try {
+    cacheRow = await getLatestChartCache(dataPoint.uuid, CHART_TYPE);
+  } catch (error) {
+    if (isSortMemoryError(error)) {
+      return {
+        ok: false,
+        status: 'FAILED',
+        data_point: dataPoint,
+        chart: null,
+        cache: { available: false },
+        job: normalizeJob(await getLatestJob(dataPoint.uuid).catch(() => null)),
+        message: 'Falha ao consultar cache do gráfico. Índice/ordenação precisa ser otimizado.',
+        error: 'Falha ao consultar cache do gráfico. Índice/ordenação precisa ser otimizado.'
+      };
+    }
+    throw error;
+  }
+  let chart = normalizeChart(cacheRow);
   const [mismatchCacheRows] = chart ? [[]] : await pool.execute(
     `SELECT uuid, data_point_uuid, source_job_uuid, chart_type, generated_at
        FROM chart_cache
@@ -507,7 +552,7 @@ const generateChartForJob = async (job, selfNode) => {
     if (cacheResult.insertId) {
       cacheId = cacheResult.insertId;
     }
-    const [[cacheRow]] = await connection.execute('SELECT id, uuid, source_job_uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? ORDER BY generated_at DESC, id DESC LIMIT 1', [dataPointUuid, CHART_TYPE]);
+    const [[cacheRow]] = await connection.execute('SELECT id, uuid, source_job_uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? LIMIT 1', [dataPointUuid, CHART_TYPE]);
     cacheId = cacheId || cacheRow?.id || null;
     cacheUuid = cacheRow?.uuid || null;
     if (!cacheId || !cacheUuid) throw new Error('chart_cache não foi salvo com uuid válido');
@@ -536,4 +581,4 @@ const markJobFailed = async (job, error) => {
   await createJobSyncEvent(job.id).catch(() => {});
 };
 
-module.exports = { getHistoricalChart, regenerateChart, generateChartForJob, markJobFailed, createJobSyncEvent, createCacheSyncEvent, markChartCacheStale, getPointTimeSeries, CHART_TYPE, toNumberOrNull, normalizeStatus, isValidChartPayload, CHART_JOB_TIMEOUT_SECONDS: env.chartJobTimeoutSeconds };
+module.exports = { getHistoricalChart, regenerateChart, generateChartForJob, markJobFailed, createJobSyncEvent, createCacheSyncEvent, markChartCacheStale, getLatestChartCache, getPointTimeSeries, CHART_TYPE, toNumberOrNull, normalizeStatus, isValidChartPayload, CHART_JOB_TIMEOUT_SECONDS: env.chartJobTimeoutSeconds };
