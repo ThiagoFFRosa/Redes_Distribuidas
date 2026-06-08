@@ -914,7 +914,20 @@ document.addEventListener('DOMContentLoaded', () => {
        ========================================================================== */
     const selfModal = document.getElementById('self-config-modal');
     const selfError = document.getElementById('self-config-error');
-    const openSelfModal = () => { if (selfModal) selfModal.classList.remove('hidden'); if (selfModal) selfModal.classList.add('flex'); };
+    const applySelfSuggestions = (suggestions = {}) => {
+        const setIfEmpty = (id, value) => {
+            const el = document.getElementById(id);
+            if (el && !el.value && value !== undefined && value !== null) el.value = value;
+        };
+        setIfEmpty('self-node-name', suggestions.node_name || 'Minipc');
+        setIfEmpty('self-node-ip', suggestions.tailscale_ip || '');
+        setIfEmpty('self-port', suggestions.port || 3000);
+        setIfEmpty('self-public-url', suggestions.public_url || '');
+        setIfEmpty('self-power-score', suggestions.power_score ?? 5);
+        const roleEl = document.getElementById('self-role');
+        if (roleEl && (!roleEl.value || roleEl.value === 'UNKNOWN')) roleEl.value = suggestions.role || 'STANDBY';
+    };
+    const openSelfModal = (suggestions = null) => { if (suggestions) applySelfSuggestions(suggestions); if (selfModal) selfModal.classList.remove('hidden'); if (selfModal) selfModal.classList.add('flex'); };
     const closeSelfModal = () => { if (selfModal) selfModal.classList.add('hidden'); if (selfModal) selfModal.classList.remove('flex'); };
     const addModal = document.getElementById('add-server-modal');
     const openAddModal = () => { if (addModal) { addModal.classList.remove('hidden'); addModal.classList.add('flex'); } };
@@ -924,10 +937,13 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const selfData = await apiFetch('/api/cluster/self');
             if (!selfData.configured) {
-                openSelfModal();
-            } else {
-                closeSelfModal();
+                openSelfModal(selfData.suggestions || {});
+                state.servidores = [];
+                state.syncStatusByUuid = new Map();
+                state.syncStatusByName = new Map();
+                return;
             }
+            closeSelfModal();
             const [nodesData, syncData] = await Promise.all([
                 apiFetch('/api/cluster/nodes'),
                 apiFetch('/api/sync/status').catch(() => ({ nodes: [] }))
@@ -1030,8 +1046,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('self-config-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         selfError.textContent = '';
-        const payload = { node_name: document.getElementById('self-node-name').value.trim(), tailscale_ip: document.getElementById('self-node-ip').value.trim(), public_url: document.getElementById('self-public-url').value.trim(), role: document.getElementById('self-role').value, power_score: Number(document.getElementById('self-power-score')?.value || 5) };
+        const portValue = Number(document.getElementById('self-port')?.value || 3000);
+        const payload = { node_name: document.getElementById('self-node-name').value.trim(), tailscale_ip: document.getElementById('self-node-ip').value.trim(), port: portValue, public_url: document.getElementById('self-public-url').value.trim(), role: document.getElementById('self-role').value || 'STANDBY', power_score: Number(document.getElementById('self-power-score')?.value || 5) };
         if (!payload.node_name || !payload.tailscale_ip) { selfError.textContent = 'Nome e IP são obrigatórios.'; return; }
+        if (!Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) { selfError.textContent = 'Porta deve ficar entre 1 e 65535.'; return; }
         if (!Number.isInteger(payload.power_score) || payload.power_score < 0 || payload.power_score > 10) { selfError.textContent = 'Ordem de potência deve ficar entre 0 e 10.'; return; }
         try {
             await apiFetch('/api/cluster/self', { method:'POST', body: JSON.stringify(payload)});
@@ -1195,7 +1213,8 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('self-node-name').value = self.node_name || '';
       document.getElementById('self-node-ip').value = self.tailscale_ip || '';
       document.getElementById('self-public-url').value = self.public_url || '';
-      document.getElementById('self-role').value = self.role || 'UNKNOWN';
+      document.getElementById('self-port').value = self.port || 3000;
+      document.getElementById('self-role').value = self.role || 'STANDBY';
       document.getElementById('self-power-score').value = self.power_score ?? 5;
       openSelfModal();
     });

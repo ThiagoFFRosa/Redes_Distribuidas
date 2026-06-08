@@ -8,6 +8,7 @@ const logger = require('../utils/logger');
 const { getNodeSyncTarget } = require('../utils/sync-targets');
 const syncCoordinator = require('../services/sync-coordinator.service');
 const ngrokCoordinator = require('../services/ngrok-coordinator.service');
+const { detectTailscaleIp } = require('../utils/network-addresses');
 
 const router = express.Router();
 const ROLES = ['HOST', 'STANDBY', 'UNKNOWN'];
@@ -101,6 +102,70 @@ const serializeClusterNode = (node = {}) => ({
   has_public_endpoint: Number(node.ngrok_enabled_currently || 0) === 1,
   sync_target_url: getNodeSyncTarget(node)
 });
+
+const getSelfBootstrapSuggestions = () => {
+  const tailscaleIp = detectTailscaleIp();
+  const port = env.port;
+  return {
+    node_name: env.serverName || 'Minipc',
+    tailscale_ip: tailscaleIp || '',
+    port,
+    public_url: tailscaleIp ? `http://${tailscaleIp}:${port}` : '',
+    role: 'STANDBY',
+    power_score: 5
+  };
+};
+
+const handleGetSelf = async (_req, res) => {
+  try {
+    const node = await repo.getSelfNode();
+    res.json({
+      configured: Boolean(node),
+      node: node ? serializeClusterNode(node) : null,
+      suggestions: node ? null : getSelfBootstrapSuggestions()
+    });
+  } catch (error) {
+    if (handleSchemaNotMigrated(error, res)) return;
+    throw error;
+  }
+};
+
+const saveSelfNode = async (req, res) => {
+  const payload = normalize(req.body);
+  if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' });
+  if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' });
+  const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip);
+  const selfNode = await repo.getSelfNode();
+  if (existingIp && (!selfNode || existingIp.id !== selfNode.id)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' });
+  const now = new Date();
+  payload.port = payload.port || env.port;
+  await repo.clearSelfFlag();
+  let node;
+  if (selfNode) node = await repo.updateNodeStructuralData(selfNode.id, { ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null }, { reason: 'self-config' });
+  else node = await repo.createNode({ ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null, metadata: null, port: payload.port || env.port }, { reason: 'self-config' });
+  res.json({ configured: true, node: serializeClusterNode(node) });
+};
+
+
+const allowInitialSelfStatus = async (req, res, next) => {
+  try {
+    const selfNode = await repo.getSelfNode();
+    if (!selfNode) return handleGetSelf(req, res);
+    return requireAuth(req, res, next);
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const allowInitialSelfConfig = async (req, res, next) => {
+  try {
+    const selfNode = await repo.getSelfNode();
+    if (!selfNode) return saveSelfNode(req, res);
+    return requireAuth(req, res, next);
+  } catch (error) {
+    return next(error);
+  }
+};
 
 const applyBootstrapNodes = async (nodes = []) => {
   const self = await repo.getSelfNode();
@@ -310,6 +375,9 @@ router.get('/bootstrap', async (req, res) => {
   });
 });
 
+router.get('/self', allowInitialSelfStatus, handleGetSelf);
+router.post('/self', allowInitialSelfConfig, saveSelfNode);
+
 router.use(requireAuth);
 
 router.post('/ngrok/assume', async (_req, res) => {
@@ -317,16 +385,6 @@ router.post('/ngrok/assume', async (_req, res) => {
   catch (error) { res.status(503).json({ ok: false, message: error.message }); }
 });
 
-router.get('/self', async (_req, res) => {
-  try {
-    const node = await repo.getSelfNode();
-    res.json({ configured: Boolean(node), node: node ? serializeClusterNode(node) : null });
-  } catch (error) {
-    if (handleSchemaNotMigrated(error, res)) return;
-    throw error;
-  }
-});
-router.post('/self', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); const existingIp = await repo.findByTailscaleIp(payload.tailscale_ip); const selfNode = await repo.getSelfNode(); if (existingIp && (!selfNode || existingIp.id !== selfNode.id)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); const now = new Date(); payload.port = payload.port || env.port; await repo.clearSelfFlag(); let node; if (selfNode) node = await repo.updateNodeStructuralData(selfNode.id, { ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null }, { reason: 'self-config' }); else node = await repo.createNode({ ...payload, is_self: 1, status: 'ONLINE', last_heartbeat_at: now, last_healthcheck_at: now, healthcheck_error: null, metadata: null, port: payload.port || env.port }, { reason: 'self-config' }); res.json({ configured: true, node: serializeClusterNode(node) }); });
 
 router.get('/nodes', async (_req, res) => res.json({ nodes: (await repo.getAllNodes()).map(serializeClusterNode) }));
 router.post('/nodes', async (req, res) => { const payload = normalize(req.body); if (payload.power_score === null) return res.status(400).json({ message: 'power_score deve ser um número inteiro entre 0 e 10.' }); if (!payload.node_name || !payload.tailscale_ip) return res.status(400).json({ message: 'node_name e tailscale_ip são obrigatórios.' }); if (await repo.findByTailscaleIp(payload.tailscale_ip)) return res.status(409).json({ message: 'tailscale_ip já cadastrado.' }); payload.port = payload.port || env.port; const node = await repo.createNode({ ...payload, is_self: 0, status: 'UNKNOWN', last_heartbeat_at: null, last_healthcheck_at: null, healthcheck_error: null, metadata: null }, { reason: 'manual-edit' }); res.status(201).json({ node: serializeClusterNode(node) }); });
