@@ -99,6 +99,9 @@ const upsertClusterNode = async (event, c) => {
     node_name: p.node_name || existing?.node_name,
     tailscale_ip: p.tailscale_ip || existing?.tailscale_ip,
     public_url: isSelf ? (existing?.public_url ?? p.public_url ?? null) : (p.public_url ?? existing?.public_url ?? null),
+    ngrok_enabled_currently: Number(p.ngrok_enabled_currently ?? existing?.ngrok_enabled_currently ?? 0),
+    ngrok_status: p.ngrok_status || existing?.ngrok_status || 'UNKNOWN',
+    ngrok_last_seen_at: asDate(p.ngrok_last_seen_at) || existing?.ngrok_last_seen_at || null,
     port: asInt(p.port, existing?.port ?? null),
     role: p.role || existing?.role || 'UNKNOWN',
     status: existing?.status || 'UNKNOWN',
@@ -113,16 +116,16 @@ const upsertClusterNode = async (event, c) => {
 
   if (existing) {
     await c.execute(
-      `UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, role=?, status=?, is_self=?,
+      `UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, ngrok_enabled_currently=?, ngrok_status=?, ngrok_last_seen_at=?, port=?, role=?, status=?, is_self=?,
        last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=?, structural_version=? WHERE id=?`,
-      [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.port, values.role, values.status, values.is_self,
+      [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.ngrok_enabled_currently, values.ngrok_status, values.ngrok_last_seen_at, values.port, values.role, values.status, values.is_self,
         values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score, values.structural_version, existing.id]
     );
   } else {
     await c.execute(
-      `INSERT INTO cluster_nodes (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score, structural_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.port, values.role, values.status, values.is_self,
+      `INSERT INTO cluster_nodes (node_uuid, node_name, tailscale_ip, public_url, ngrok_enabled_currently, ngrok_status, ngrok_last_seen_at, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score, structural_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [values.node_uuid, values.node_name, values.tailscale_ip, values.public_url, values.ngrok_enabled_currently, values.ngrok_status, values.ngrok_last_seen_at, values.port, values.role, values.status, values.is_self,
         values.last_heartbeat_at, values.last_healthcheck_at, values.healthcheck_error, values.metadata, values.power_score, values.structural_version]
     );
   }

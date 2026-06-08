@@ -680,7 +680,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-xs font-mono text-slate-600 max-w-xs break-all">${escapeHtml(targetUrl)}</td>
                     <td class="p-4 text-sm">${sync.pending_events ?? (s.is_self ? '-' : '0')}</td>
                     <td class="p-4"><span class="font-mono">${s.power_score ?? 5}/10</span></td>
-                    <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button>' : '<button class="px-2 py-1 border rounded" data-action="fix-url-tailscale" data-node-id="'+s.id+'">Corrigir URL pelo IP Tailscale</button>'}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
+                    <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button><button class="px-2 py-1 border rounded bg-indigo-600 text-white" data-action="assume-ngrok">Assumir ngrok</button>' : '<button class="px-2 py-1 border rounded" data-action="fix-url-tailscale" data-node-id="'+s.id+'">Corrigir URL pelo IP Tailscale</button>'}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
                 </tr>`;
         });
     }
@@ -881,6 +881,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('tbody-servidores')?.addEventListener('click', async (e) => {
+
+      const assumeBtn = e.target.closest('[data-action="assume-ngrok"]');
+      if (assumeBtn) {
+        assumeBtn.disabled = true;
+        try {
+          const data = await apiFetch('/api/cluster/ngrok/assume', { method: 'POST', body: JSON.stringify({}) });
+          await fetchClusterNodes();
+          renderServidores();
+          setFeedback('join-requests-feedback', data.message || 'Esta máquina tentou assumir a ngrok.', false);
+        } catch (error) {
+          setFeedback('join-requests-feedback', `Erro ao assumir ngrok: ${error.message}`, true);
+        } finally {
+          assumeBtn.disabled = false;
+        }
+        return;
+      }
+
       const fixBtn = e.target.closest('[data-action="fix-url-tailscale"]');
       if (fixBtn) {
         await apiFetch(`/api/cluster/nodes/${fixBtn.dataset.nodeId}/fix-url-tailscale`, { method: 'POST', body: JSON.stringify({}) });

@@ -7,11 +7,9 @@ const selectBestProcessingNode = async () => {
   nodes.sort((a, b) => {
     const powerDiff = Number(b.power_score ?? 5) - Number(a.power_score ?? 5);
     if (powerDiff !== 0) return powerDiff;
-    if (a.role === 'HOST' && b.role !== 'HOST') return -1;
-    if (b.role === 'HOST' && a.role !== 'HOST') return 1;
-    if (self && a.id === self.id && b.id !== self.id) return -1;
-    if (self && b.id === self.id && a.id !== self.id) return 1;
-    return String(a.node_name || '').localeCompare(String(b.node_name || ''));
+    const nameDiff = String(a.node_name || '').localeCompare(String(b.node_name || ''));
+    if (nameDiff !== 0) return nameDiff;
+    return String(a.node_uuid || '').localeCompare(String(b.node_uuid || ''));
   });
   return { bestNode: nodes[0], selfNode: self || null, onlineNodes: nodes };
 };

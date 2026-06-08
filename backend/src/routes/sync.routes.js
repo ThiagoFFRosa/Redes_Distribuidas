@@ -5,18 +5,20 @@ const applyService = require('../services/sync-apply.service');
 const syncWorker = require('../services/sync-worker');
 const syncEventService = require('../services/sync-event.service');
 const { requireAuth } = require('../services/auth.service');
+const pool = require('../database/connection');
 
 const router = express.Router();
 
 const requireClusterSecret = (req, res, next) => {
-  const secret = req.header('x-cluster-secret');
-  if (!env.sessionSecret || secret !== env.sessionSecret) return res.status(403).json({ ok: false, message: 'Secret inválido.' });
+  const secret = req.header('x-cluster-secret') || req.header('x-cluster-key');
+  const accepted = [env.sessionSecret, env.clusterKey].filter(Boolean);
+  if (!accepted.length || !accepted.includes(secret)) return res.status(403).json({ ok: false, message: 'Secret inválido.' });
   next();
 };
 
 const requireClusterSecretOrAuth = (req, res, next) => {
-  const secret = req.header('x-cluster-secret');
-  if (env.sessionSecret && secret === env.sessionSecret) return next();
+  const secret = req.header('x-cluster-secret') || req.header('x-cluster-key');
+  if ([env.sessionSecret, env.clusterKey].filter(Boolean).includes(secret)) return next();
   return requireAuth(req, res, next);
 };
 
@@ -67,6 +69,50 @@ router.post('/full-bootstrap', requireAuth, async (req, res, next) => {
 
 router.get('/full-bootstrap/status', requireAuth, async (_req, res, next) => {
   try { res.json(await coordinator.getFullBootstrapStatus()); } catch (error) { next(error); }
+});
+
+
+router.get('/diagnostics', requireAuth, async (_req, res, next) => {
+  try {
+    const [[orphanChartCache]] = await pool.execute(`SELECT COUNT(*) AS total FROM chart_cache cc LEFT JOIN data_points dp ON dp.uuid=cc.data_point_uuid WHERE dp.id IS NULL`);
+    const [[orphanHistoricalMeasurements]] = await pool.execute(`SELECT COUNT(*) AS total FROM historical_measurements hm LEFT JOIN data_points dp ON dp.id=hm.data_point_id WHERE dp.id IS NULL`);
+    const [duplicateDataPoints] = await pool.execute(`
+      SELECT COALESCE(source_key, CONCAT(LOWER(TRIM(name)), '|', COALESCE(LOWER(TRIM(city_region)), ''), '|', type)) AS duplicate_key,
+             COUNT(*) AS total, GROUP_CONCAT(uuid ORDER BY id SEPARATOR ',') AS uuids
+        FROM data_points
+       GROUP BY duplicate_key
+      HAVING COUNT(*) > 1
+      ORDER BY total DESC, duplicate_key ASC
+      LIMIT 50`);
+    const [pendingDeferredEvents] = await pool.execute(`
+      SELECT event_uuid, target_node_uuid, last_error, status, attempts, updated_at
+        FROM sync_event_deliveries
+       WHERE status IN ('PENDING','FAILED')
+         AND (last_error LIKE '%missing%' OR last_error LIKE '%dependency%' OR last_error LIKE '%uuid%')
+       ORDER BY updated_at DESC
+       LIMIT 50`).catch(() => [[]]);
+    const [deliveryErrors] = await pool.execute(`
+      SELECT target_node_uuid, status, last_error, attempts, updated_at
+        FROM sync_event_deliveries
+       WHERE status='FAILED'
+       ORDER BY updated_at DESC
+       LIMIT 50`).catch(() => [[]]);
+    const [missingChartDependencies] = await pool.execute(`
+      SELECT cc.uuid, cc.data_point_uuid, cc.source_job_uuid
+        FROM chart_cache cc LEFT JOIN data_points dp ON dp.uuid=cc.data_point_uuid
+       WHERE dp.id IS NULL
+       ORDER BY cc.updated_at DESC
+       LIMIT 50`);
+    res.json({
+      ok: true,
+      missing_dependencies: { chart_cache: missingChartDependencies },
+      duplicate_data_points: duplicateDataPoints,
+      pending_deferred_events: pendingDeferredEvents,
+      orphan_chart_cache: { count: Number(orphanChartCache.total || 0) },
+      orphan_historical_measurements: { count: Number(orphanHistoricalMeasurements.total || 0) },
+      sync_delivery_errors: deliveryErrors
+    });
+  } catch (error) { next(error); }
 });
 
 router.get('/compare', requireAuth, async (req, res, next) => {
