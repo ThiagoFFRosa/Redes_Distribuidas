@@ -12,6 +12,8 @@ document.addEventListener('DOMContentLoaded', () => {
         alertas: [],
         fila: [],
         historicalChart: null,
+        historicalPayload: null,
+        historicalZoom: null,
         historicalPollTimer: null,
         currentHistoricalPointId: null,
         pointRecords: { point: null, source: 'all', order: 'desc', page: 1, limit: 50, includeDeleted: false, total: 0, records: [] },
@@ -291,6 +293,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const trendLabel = (trend) => ({ RISING: 'Subindo', FALLING: 'Baixando', STABLE: 'Estável', UNKNOWN: 'Desconhecida' }[trend] || trend || '-');
+    const seasonalLabel = (status) => ({ MUITO_ABAIXO_DO_NORMAL: 'Muito abaixo do normal', ABAIXO_DO_NORMAL: 'Abaixo do normal', DENTRO_DO_NORMAL: 'Dentro do normal', ACIMA_DO_NORMAL: 'Acima do normal', MUITO_ACIMA_DO_NORMAL: 'Muito acima do normal', INSUFFICIENT_DATA: 'Dados insuficientes' }[status] || status || 'Dados insuficientes');
+    const riskLabel = (risk) => ({ SEM_RISCO: 'Sem risco', ATENCAO: 'Atenção', RISCO_CRITICO: 'Risco crítico', INDEFINIDO: 'Indefinido' }[risk] || risk || 'Indefinido');
     const formatMetric = (value, suffix = '') => hasValue(value) ? `${Number(value).toFixed(2)}${suffix}` : '-';
 
     const stopHistoricalPolling = () => {
@@ -343,19 +347,92 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const renderHistoricalChart = (payload) => {
+    const historicalReferenceLinePlugin = {
+        id: 'historicalReferenceLines',
+        afterDatasetsDraw(chart) {
+            const lines = chart.options?.plugins?.historicalReferenceLines?.lines || [];
+            const yScale = chart.scales?.y;
+            if (!lines.length || !yScale) return;
+            const { ctx, chartArea } = chart;
+            ctx.save();
+            lines.forEach((line) => {
+                const y = yScale.getPixelForValue(line.value);
+                if (Number.isNaN(y) || y < chartArea.top || y > chartArea.bottom) return;
+                ctx.beginPath();
+                ctx.setLineDash([6, 5]);
+                ctx.strokeStyle = line.color || '#64748b';
+                ctx.lineWidth = 1;
+                ctx.moveTo(chartArea.left, y);
+                ctx.lineTo(chartArea.right, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = line.color || '#64748b';
+                ctx.font = '11px sans-serif';
+                ctx.fillText(line.label, chartArea.left + 8, y - 4);
+            });
+            ctx.restore();
+        }
+    };
+    if (window.Chart) { try { Chart.register(historicalReferenceLinePlugin); } catch (_error) {} }
+
+    const sliceHistoricalPayload = (payload, zoom = null) => {
+        const normalized = normalizeChartPayload(payload);
+        if (!normalized?.labels?.length || !zoom) return normalized;
+        const start = Math.max(0, zoom.start);
+        const end = Math.min(normalized.labels.length - 1, zoom.end);
+        return {
+            ...normalized,
+            labels: normalized.labels.slice(start, end + 1),
+            datasets: (normalized.datasets || []).map((dataset) => ({ ...dataset, data: (dataset.data || []).slice(start, end + 1) })),
+            points: (normalized.points || []).slice(start, Math.min(end + 1, normalized.points.length))
+        };
+    };
+
+    const applyHistoricalZoom = (zoom) => {
+        if (!state.historicalPayload) return;
+        const labels = state.historicalPayload.labels || [];
+        if (!labels.length) return;
+        if (!zoom) {
+            state.historicalZoom = null;
+        } else {
+            const size = Math.max(1, Math.round(zoom.end - zoom.start + 1));
+            let start = Math.round(zoom.start);
+            let end = Math.round(zoom.end);
+            if (start < 0) { end += -start; start = 0; }
+            if (end > labels.length - 1) { start -= end - (labels.length - 1); end = labels.length - 1; }
+            start = Math.max(0, start);
+            end = Math.min(labels.length - 1, Math.max(start, end));
+            if (end - start + 1 < Math.min(size, labels.length)) end = Math.min(labels.length - 1, start + size - 1);
+            state.historicalZoom = { start, end };
+        }
+        renderHistoricalChart(state.historicalPayload, state.historicalZoom);
+    };
+
+    const applyHistoricalRange = (days) => {
+        const payload = state.historicalPayload;
+        const labels = payload?.labels || [];
+        if (!labels.length || days === 'all') return applyHistoricalZoom(null);
+        const lastTime = new Date(labels[labels.length - 1]).getTime();
+        const minTime = lastTime - Number(days) * 86400000;
+        const start = labels.findIndex((label) => new Date(label).getTime() >= minTime);
+        applyHistoricalZoom({ start: start >= 0 ? start : 0, end: labels.length - 1 });
+    };
+
+    const renderHistoricalChart = (payload, zoom = null) => {
         const canvas = document.getElementById('historical-chart');
         if (!canvas) return;
         if (state.historicalChart) state.historicalChart.destroy();
-        const normalized = normalizeChartPayload(payload);
+        const normalized = sliceHistoricalPayload(payload, zoom);
         const points = normalized?.points || [];
+        let dragStart = null;
         const datasets = (normalized?.datasets || []).map((dataset) => ({
             ...dataset,
             borderColor: dataset.borderColor || '#0d9488',
             backgroundColor: dataset.backgroundColor || 'rgba(13,148,136,0.12)',
-            fill: dataset.fill ?? true,
+            fill: dataset.fill ?? false,
             tension: dataset.tension ?? 0.25,
-            pointRadius: dataset.pointRadius ?? 0
+            pointRadius: dataset.pointRadius ?? 0,
+            spanGaps: true
         }));
         state.historicalChart = new Chart(canvas, {
             type: 'line',
@@ -363,23 +440,58 @@ document.addEventListener('DOMContentLoaded', () => {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
                 plugins: {
-                    legend: { display: true },
+                    legend: { display: true, labels: { usePointStyle: true } },
+                    historicalReferenceLines: { lines: normalized?.reference_lines || [] },
                     tooltip: {
                         callbacks: {
                             label: (context) => {
                                 const point = points[context.dataIndex] || {};
                                 const value = context.parsed?.y ?? context.raw;
+                                if (value == null) return `${context.dataset.label}: sem valor`;
                                 const unit = point.unit || normalized?.unit || 'm';
-                                const source = point.source === 'SITE' ? 'Site' : (point.source || 'CSV');
-                                return `${context.label} — ${value} ${unit} — Origem: ${source}`;
+                                const source = point.source === 'SITE' ? 'Site' : point.source === 'FORECAST' ? 'Previsão' : (point.source || 'CSV');
+                                return `${context.dataset.label}: ${Number(value).toFixed(2)} ${unit}${source ? ` · ${source}` : ''}`;
+                            },
+                            afterBody: () => {
+                                const seasonal = normalized?.seasonal_analysis;
+                                return seasonal?.available ? [`Diferença p/ média sazonal: ${formatMetric(seasonal.difference_from_mean, normalized?.unit || 'm')}`] : [];
                             }
                         }
                     }
                 },
-                scales: { y: { title: { display: true, text: normalized?.unit || 'm' } } }
+                scales: { y: { title: { display: true, text: normalized?.unit || 'm' } }, x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } } }
             }
         });
+        canvas.onmousedown = (event) => { dragStart = event.offsetX; };
+        canvas.onmouseup = (event) => {
+            if (dragStart == null || !state.historicalPayload?.labels?.length) return;
+            const chart = state.historicalChart;
+            const xScale = chart.scales.x;
+            const from = xScale.getValueForPixel(Math.min(dragStart, event.offsetX));
+            const to = xScale.getValueForPixel(Math.max(dragStart, event.offsetX));
+            if (event.shiftKey && state.historicalZoom) {
+                const delta = Math.round((dragStart - event.offsetX) / Math.max(1, xScale.width) * (state.historicalZoom.end - state.historicalZoom.start));
+                return applyHistoricalZoom({ start: state.historicalZoom.start + delta, end: state.historicalZoom.end + delta });
+            }
+            dragStart = null;
+            if (Math.abs(to - from) >= 2) {
+                const baseStart = state.historicalZoom?.start || 0;
+                applyHistoricalZoom({ start: baseStart + Math.floor(from), end: baseStart + Math.ceil(to) });
+            }
+        };
+        canvas.onwheel = (event) => {
+            event.preventDefault();
+            const labels = state.historicalPayload?.labels || [];
+            if (labels.length < 3) return;
+            const current = state.historicalZoom || { start: 0, end: labels.length - 1 };
+            const range = current.end - current.start + 1;
+            const direction = event.deltaY > 0 ? 1 : -1;
+            const nextRange = Math.max(3, Math.min(labels.length, Math.round(range * (direction > 0 ? 1.25 : 0.8))));
+            const center = Math.round((current.start + current.end) / 2);
+            applyHistoricalZoom({ start: center - Math.floor(nextRange / 2), end: center + Math.ceil(nextRange / 2) });
+        };
     };
 
     const scheduleHistoricalPolling = (pointId, status) => {
@@ -392,16 +504,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 2500);
     };
 
-    const renderHistoricalSummary = (summary = {}, status = 'PROCESSING', hasCache = false) => {
+    const renderHistoricalSummary = (summary = {}, status = 'PROCESSING', hasCache = false, seasonal = {}, forecast = {}) => {
         const waiting = ['PROCESSING', 'WAITING_CACHE_SYNC'].includes(status) && !hasCache;
         const period = waiting ? 'Dados ainda não disponíveis' : `${summary.date_start || '-'} a ${summary.date_end || '-'}`;
+        const seasonalAvailable = seasonal?.available;
+        const forecastAvailable = forecast?.available;
         document.getElementById('historical-summary').innerHTML = `
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Período</span><strong>${escapeHtml(period)}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Medições</span><strong>${waiting ? 'Aguardando cache' : (summary.points_count ?? summary.total_measurements ?? '-')}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Mínimo</span><strong>${waiting ? '-' : formatMetric(summary.min ?? summary.min_value, 'm')}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Máximo</span><strong>${waiting ? '-' : formatMetric(summary.max ?? summary.max_value, 'm')}</strong></div>
             <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Média</span><strong>${waiting ? '-' : formatMetric(summary.avg ?? summary.average_value, 'm')}</strong></div>
-            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Tendência</span><strong>${waiting ? '-' : escapeHtml(trendLabel(summary.trend))}</strong></div>`;
+            <div class="rounded-xl bg-slate-50 p-3"><span class="block text-slate-500">Tendência</span><strong>${waiting ? '-' : escapeHtml(trendLabel(summary.trend))}</strong></div>
+            <div class="rounded-xl bg-blue-50 p-3 lg:col-span-2"><span class="block text-blue-700">Comparação sazonal</span><strong>${waiting ? '-' : escapeHtml(seasonalLabel(seasonal?.status))}</strong><small class="block text-slate-500 mt-1">${seasonalAvailable ? `Percentil ${Number(seasonal.percentile).toFixed(0)}%` : 'Dados insuficientes para análise sazonal'}</small></div>
+            <div class="rounded-xl bg-blue-50 p-3"><span class="block text-blue-700">Faixa histórica da época</span><strong>${seasonalAvailable ? `${formatMetric(seasonal.historical_range_min, 'm')} a ${formatMetric(seasonal.historical_range_max, 'm')}` : '-'}</strong></div>
+            <div class="rounded-xl bg-blue-50 p-3"><span class="block text-blue-700">Desvio da média sazonal</span><strong>${seasonalAvailable ? formatMetric(seasonal.difference_from_mean, 'm') : '-'}</strong></div>
+            <div class="rounded-xl bg-blue-50 p-3"><span class="block text-blue-700">Oscilação recente</span><strong>${seasonalAvailable ? formatMetric(seasonal.recent_amplitude, 'm') : '-'}</strong></div>
+            <div class="rounded-xl bg-purple-50 p-3 lg:col-span-2"><span class="block text-purple-700">Previsão</span><strong>${forecastAvailable ? `${escapeHtml(trendLabel(forecast.trend))} · ${formatMetric(forecast.predicted_value, 'm')}` : 'Dados insuficientes para previsão'}</strong><small class="block text-slate-500 mt-1">${forecastAvailable ? `${forecast.horizon_hours}h · variação ${formatMetric(forecast.predicted_change, 'm')} · confiança ${escapeHtml(String(forecast.confidence || '').toLowerCase())}` : ''}</small></div>
+            <div class="rounded-xl bg-amber-50 p-3"><span class="block text-amber-700">Risco projetado</span><strong>${forecastAvailable ? escapeHtml(riskLabel(forecast.risk_projection)) : '-'}</strong></div>`;
     };
 
     const loadHistoricalChart = async (pointId) => {
@@ -411,6 +531,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const cache = data.cache?.available ? data.cache : data.chart;
         const payload = normalizeChartPayload(cache?.data || cache?.payload);
         const summary = cache?.summary || {};
+        const seasonal = cache?.seasonal_analysis || payload?.seasonal_analysis || {};
+        const forecast = cache?.forecast || payload?.forecast || {};
         const hasRenderableCache = isValidChartPayload(payload);
         const status = hasRenderableCache && data.cache?.available ? (responseStatus === 'STALE' || cache?.stale ? 'STALE' : 'READY') : responseStatus;
         document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
@@ -419,7 +541,9 @@ document.addEventListener('DOMContentLoaded', () => {
             : status === 'STALE'
                 ? (data.message || 'Existem medições novas. Atualize o gráfico.')
                 : (data.message || '');
-        renderHistoricalSummary(summary, status, hasRenderableCache);
+        renderHistoricalSummary(summary, status, hasRenderableCache, seasonal, forecast);
+        state.historicalPayload = payload;
+        state.historicalZoom = null;
         document.getElementById('historical-job').innerHTML = data.job ? `Node: <strong>${escapeHtml(data.job.assigned_to || data.job.assigned_node_name || '-')}</strong> · Status do job: <strong>${escapeHtml(data.job.status || '-')}</strong> · Status do cache: <strong>${escapeHtml(status)}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : `Status do cache: <strong>${escapeHtml(status)}</strong>`;
 
         if ((status === 'READY' || status === 'STALE') && hasRenderableCache) {
@@ -1079,6 +1203,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     document.getElementById('close-historical-modal')?.addEventListener('click', closeHistoricalModal);
+    document.getElementById('historical-reset-zoom')?.addEventListener('click', () => applyHistoricalZoom(null));
+    document.querySelectorAll('[data-history-range]').forEach((button) => button.addEventListener('click', () => applyHistoricalRange(button.dataset.historyRange)));
     document.getElementById('regenerate-historical-chart')?.addEventListener('click', async () => {
         if (!state.currentHistoricalPointId) return;
         stopHistoricalPolling();
