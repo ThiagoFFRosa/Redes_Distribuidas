@@ -280,14 +280,14 @@ const upsertChartCache = async (event, c) => {
   }
   if (await shouldSkipOlder(c, 'chart_cache', p.uuid, eventTime(event))) return 'skipped_older';
   await c.execute(
-    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid, generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, error_message, generated_at)
-     VALUES (?, ?, ?, ?, ?, (SELECT id FROM cluster_nodes WHERE node_uuid=? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid, generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, summary_json, seasonal_analysis_json, forecast_json, payload_json, error_message, generated_at)
+     VALUES (?, ?, ?, ?, ?, (SELECT id FROM cluster_nodes WHERE node_uuid=? LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), data_point_id=VALUES(data_point_id), data_point_uuid=VALUES(data_point_uuid), chart_type=VALUES(chart_type), status=VALUES(status),
        generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid), generated_by_node_name=VALUES(generated_by_node_name),
        source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start), date_end=VALUES(date_end), payload=VALUES(payload),
-       summary=VALUES(summary), error_message=VALUES(error_message), generated_at=VALUES(generated_at)`,
+       summary=VALUES(summary), summary_json=VALUES(summary_json), seasonal_analysis_json=VALUES(seasonal_analysis_json), forecast_json=VALUES(forecast_json), payload_json=VALUES(payload_json), error_message=VALUES(error_message), generated_at=VALUES(generated_at)`,
     [p.uuid, dataPointId, p.data_point_uuid, p.chart_type || 'HISTORICAL_RIVER_LEVEL', p.status || 'READY', p.generated_by_node_uuid || null, p.generated_by_node_uuid || null,
-      p.generated_by_node_name || null, p.source_job_uuid || null, p.total_points || 0, p.date_start || null, p.date_end || null, json(p.payload), json(p.summary), p.error_message || null, asDate(p.generated_at)]
+      p.generated_by_node_name || null, p.source_job_uuid || null, p.total_points || 0, p.date_start || null, p.date_end || null, json(p.payload), json(p.summary), json(p.summary), json(p.seasonal_analysis || p.payload?.seasonal_analysis), json(p.forecast || p.payload?.forecast), json(p.payload), p.error_message || null, asDate(p.generated_at)]
   );
   console.log(`[sync-apply] chart_cache APPLIED uuid=${p.uuid} data_point_uuid=${p.data_point_uuid || '-'} points=${p.total_points || 0}`);
   return 'applied';

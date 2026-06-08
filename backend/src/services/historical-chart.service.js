@@ -10,6 +10,8 @@ const env = require('../config/env');
 
 const CHART_TYPE = 'HISTORICAL_RIVER_LEVEL';
 const MAX_POINTS = 1000;
+const FORECAST_MAX_HOURS = 48;
+const SEASONAL_WINDOW_DAYS = 30;
 const ACTIVE_JOB_REUSE_MINUTES = 2;
 
 const parseJson = (value) => {
@@ -30,6 +32,20 @@ const average = (items) => {
   if (!items.length) return null;
   return items.reduce((sum, item) => sum + Number(item.value || 0), 0) / items.length;
 };
+
+
+const valuesOnly = (rows) => rows.map((row) => Number(row.value)).filter(Number.isFinite);
+const median = (values) => { const sorted = values.filter(Number.isFinite).sort((a, b) => a - b); if (!sorted.length) return null; const mid = Math.floor(sorted.length / 2); return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2; };
+const stdDev = (values) => { const finite = values.filter(Number.isFinite); if (finite.length < 2) return null; const mean = finite.reduce((sum, value) => sum + value, 0) / finite.length; return Math.sqrt(finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (finite.length - 1)); };
+const percentileRank = (values, currentValue) => { const finite = values.filter(Number.isFinite).sort((a, b) => a - b); if (!finite.length || !Number.isFinite(currentValue)) return null; return (finite.filter((value) => value <= currentValue).length / finite.length) * 100; };
+const dayOfYear = (value) => { const date = value instanceof Date ? value : new Date(value); if (Number.isNaN(date.getTime())) return null; const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 0)); return Math.floor((date - start) / 86400000); };
+const dayDistance = (a, b) => { if (a == null || b == null) return 999; const diff = Math.abs(a - b); return Math.min(diff, 366 - diff); };
+const linearRegression = (points) => { if (points.length < 2) return null; const n = points.length; const sumX = points.reduce((sum, point) => sum + point.x, 0); const sumY = points.reduce((sum, point) => sum + point.y, 0); const sumXY = points.reduce((sum, point) => sum + point.x * point.y, 0); const sumX2 = points.reduce((sum, point) => sum + point.x * point.x, 0); const denominator = n * sumX2 - sumX * sumX; if (!denominator) return null; return { slope: (n * sumXY - sumX * sumY) / denominator, intercept: (sumY - ((n * sumXY - sumX * sumY) / denominator) * sumX) / n }; };
+const classifySeasonalStatus = (percentile) => { if (percentile == null) return 'INSUFFICIENT_DATA'; if (percentile < 10) return 'MUITO_ABAIXO_DO_NORMAL'; if (percentile < 20) return 'ABAIXO_DO_NORMAL'; if (percentile <= 80) return 'DENTRO_DO_NORMAL'; if (percentile <= 90) return 'ACIMA_DO_NORMAL'; return 'MUITO_ACIMA_DO_NORMAL'; };
+const riskProjection = (predictedValue, dataPoint) => { if (!Number.isFinite(predictedValue)) return 'INDEFINIDO'; const critical = toNumberOrNull(dataPoint?.critical_level); const warning = toNumberOrNull(dataPoint?.warning_level); if (critical != null && predictedValue >= critical) return 'RISCO_CRITICO'; if (warning != null && predictedValue >= warning) return 'ATENCAO'; return 'SEM_RISCO'; };
+const movingAverageAt = (rows, index, windowSize = 7) => { const window = rows.slice(Math.max(0, index - windowSize + 1), index + 1).map((row) => Number(row.value)).filter(Number.isFinite); return window.length ? window.reduce((sum, value) => sum + value, 0) / window.length : null; };
+const buildSeasonalAnalysis = (rows) => { const latest = rows[rows.length - 1]; if (!latest) return { available: false, status: 'INSUFFICIENT_DATA', message: 'Dados insuficientes para análise sazonal.' }; const latestDate = new Date(latest.date); const latestDoy = dayOfYear(latestDate); const recentStart = new Date(latestDate.getTime() - (SEASONAL_WINDOW_DAYS - 1) * 86400000); const recentValues = valuesOnly(rows.filter((row) => new Date(row.date) >= recentStart && new Date(row.date) <= latestDate)); const historicalValues = valuesOnly(rows.filter((row) => { const date = new Date(row.date); return date.getUTCFullYear() < latestDate.getUTCFullYear() && dayDistance(dayOfYear(date), latestDoy) <= Math.floor(SEASONAL_WINDOW_DAYS / 2); })); if (historicalValues.length < 5 || !recentValues.length) return { available: false, status: 'INSUFFICIENT_DATA', message: 'Dados insuficientes para análise sazonal.', sample_size: historicalValues.length }; const historicalMean = historicalValues.reduce((sum, value) => sum + value, 0) / historicalValues.length; const deviation = stdDev(historicalValues) || 0; const currentValue = Number(latest.value); const percentile = percentileRank(historicalValues, currentValue); const status = classifySeasonalStatus(percentile); return { available: true, status, reference_days: SEASONAL_WINDOW_DAYS, sample_size: historicalValues.length, historical_mean: historicalMean, historical_median: median(historicalValues), historical_std_dev: deviation, historical_range_min: historicalMean - deviation, historical_range_max: historicalMean + deviation, historical_min: Math.min(...historicalValues), historical_max: Math.max(...historicalValues), difference_from_mean: currentValue - historicalMean, percentile, recent_amplitude: Math.max(...recentValues) - Math.min(...recentValues), message: `Comparado ao histórico desta época do ano, o ponto está em condição ${status.toLowerCase().replaceAll('_', ' ')}.` }; };
+const buildForecast = (rows, dataPoint, unit = 'm') => { if (rows.length < 4) return { available: false, status: 'INSUFFICIENT_DATA', message: 'Dados insuficientes para previsão.' }; const latest = rows[rows.length - 1]; const latestTime = new Date(latest.date).getTime(); const recent = rows.filter((row) => latestTime - new Date(row.date).getTime() <= 7 * 86400000).slice(-24); if (recent.length < 4) return { available: false, status: 'INSUFFICIENT_DATA', message: 'Dados insuficientes para previsão.' }; const firstTime = new Date(recent[0].date).getTime(); const spanHours = (latestTime - firstTime) / 3600000; if (spanHours <= 0) return { available: false, status: 'INSUFFICIENT_DATA', message: 'Dados insuficientes para previsão.' }; const regression = linearRegression(recent.map((row) => ({ x: (new Date(row.date).getTime() - firstTime) / 3600000, y: Number(row.value) }))); if (!regression) return { available: false, status: 'INSUFFICIENT_DATA', message: 'Dados insuficientes para previsão.' }; const horizonHours = Math.min(FORECAST_MAX_HOURS, spanHours >= 24 ? 48 : 24); const currentX = (latestTime - firstTime) / 3600000; const currentValue = Number(latest.value); const predictedValue = regression.intercept + regression.slope * (currentX + horizonHours); const predictedChange = predictedValue - currentValue; const trend = Math.abs(predictedChange) < 0.03 ? 'STABLE' : predictedChange > 0 ? 'RISING' : 'FALLING'; return { available: true, horizon_hours: horizonHours, trend, predicted_change: predictedChange, predicted_value: predictedValue, confidence: recent.length >= 12 && spanHours >= 48 ? 'ALTA' : recent.length >= 6 ? 'MEDIA' : 'BAIXA', risk_projection: riskProjection(predictedValue, dataPoint), method: 'Regressão linear leve com janela recente', note: 'Previsão simples baseada em tendência recente; não é modelo hidrológico oficial.', points: [{ date: dateOnly(latest.date), value: currentValue, unit, source: 'OBSERVED_FORECAST_ANCHOR' }, { date: new Date(latestTime + horizonHours * 3600000).toISOString().slice(0, 10), value: predictedValue, unit, source: 'FORECAST' }] }; };
 
 const calculateTrend = (rows) => {
   if (rows.length < 14) return 'UNKNOWN';
@@ -169,6 +185,8 @@ const normalizeChart = (row) => {
     average_value: rawSummary.average_value ?? rawSummary.avg ?? null
   };
   const payload = normalizeChartPayload(parseJson(row.payload));
+  const seasonalAnalysis = parseJson(row.seasonal_analysis_json) || payload?.seasonal_analysis || null;
+  const forecast = parseJson(row.forecast_json) || payload?.forecast || null;
   return {
     available: row.status === 'READY',
     uuid: row.uuid,
@@ -176,6 +194,8 @@ const normalizeChart = (row) => {
     data: payload,
     payload,
     summary,
+    seasonal_analysis: seasonalAnalysis,
+    forecast,
     generated_at: row.generated_at,
     points_count: summary.points_count,
     total_points: Number(row.total_points || summary.points_count || 0),
@@ -394,7 +414,7 @@ const regenerateChart = async (dataPointId, importId = null) => {
 
 const generateChartForJob = async (job, selfNode) => {
   const dataPointUuid = job.data_point_uuid;
-  const [[jobDataPoint]] = await pool.execute('SELECT id, uuid, measurement_unit FROM data_points WHERE uuid=? LIMIT 1', [dataPointUuid]);
+  const [[jobDataPoint]] = await pool.execute('SELECT id, uuid, measurement_unit, normal_level, warning_level, critical_level FROM data_points WHERE uuid=? LIMIT 1', [dataPointUuid]);
   if (!jobDataPoint) throw new Error(`data_point_uuid do job não existe localmente: ${dataPointUuid}`);
   const dataPointId = jobDataPoint.id;
   if (Number(job.data_point_id) !== Number(dataPointId)) {
@@ -420,6 +440,17 @@ const generateChartForJob = async (job, selfNode) => {
   const labels = sampled.map((row) => dateOnly(row.date));
   const values = sampled.map((row) => Number(row.value));
   const points = sampled.map((row) => ({ date: dateOnly(row.date), value: Number(row.value), unit: row.unit || unit, source: row.source }));
+  const sampledIndexes = sampled.map((sample) => rows.findIndex((row) => row.date === sample.date));
+  const seasonalAnalysis = buildSeasonalAnalysis(rows);
+  const forecast = buildForecast(rows, jobDataPoint, unit);
+  const seasonalMeanData = sampled.map(() => seasonalAnalysis.available ? seasonalAnalysis.historical_mean : null);
+  const seasonalMinData = sampled.map(() => seasonalAnalysis.available ? seasonalAnalysis.historical_range_min : null);
+  const seasonalMaxData = sampled.map(() => seasonalAnalysis.available ? seasonalAnalysis.historical_range_max : null);
+  const trendData = sampledIndexes.map((rowIndex, sampleIndex) => movingAverageAt(rows, rowIndex >= 0 ? rowIndex : sampleIndex, 7));
+  const forecastLabels = forecast.available ? forecast.points.map((point) => point.date) : [];
+  const allLabels = [...labels, ...forecastLabels.slice(1)];
+  const forecastData = forecast.available ? [...Array(Math.max(labels.length - 1, 0)).fill(null), ...forecast.points.map((point) => Number(point.value))] : allLabels.map(() => null);
+  const chartPoints = forecast.available ? [...points, forecast.points[1]] : points;
   const numericValues = rows.map((row) => Number(row.value)).filter(Number.isFinite);
   const latest = rows[rows.length - 1] || null;
   const averageValue = numericValues.length ? numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length : null;
@@ -437,11 +468,26 @@ const generateChartForJob = async (job, selfNode) => {
     latest_date: latest ? dateOnly(latest.date) : null,
     date_start: rows[0] ? dateOnly(rows[0].date) : null,
     date_end: latest ? dateOnly(latest.date) : null,
-    trend: calculateTrend(rows)
+    trend: calculateTrend(rows),
+    seasonal_status: seasonalAnalysis.status,
+    forecast_trend: forecast.trend || 'UNKNOWN',
+    risk_projection: forecast.risk_projection || 'INDEFINIDO'
   };
+  const referenceLines = [
+    jobDataPoint.normal_level != null ? { label: `Nível normal (${unit})`, value: Number(jobDataPoint.normal_level), color: '#64748b' } : null,
+    jobDataPoint.warning_level != null ? { label: `Nível de atenção (${unit})`, value: Number(jobDataPoint.warning_level), color: '#f59e0b' } : null,
+    jobDataPoint.critical_level != null ? { label: `Nível crítico (${unit})`, value: Number(jobDataPoint.critical_level), color: '#dc2626' } : null
+  ].filter(Boolean);
   const payload = total === 0
-    ? { labels: [], datasets: [{ label: `Cota histórica / medições (${unit})`, data: [] }], values: [], points: [], unit, full_count: 0, sampled_count: 0 }
-    : { labels, datasets: [{ label: `Cota histórica / medições (${unit})`, data: values }], values, points, unit, full_count: total, sampled_count: sampled.length };
+    ? { labels: [], datasets: [{ label: `Nível observado (${unit})`, data: [] }], values: [], points: [], unit, full_count: 0, sampled_count: 0, seasonal_analysis: seasonalAnalysis, forecast, reference_lines: [] }
+    : { labels: allLabels, datasets: [
+      { label: `Nível observado (${unit})`, data: [...values, null], borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,0.10)', tension: 0.25, pointRadius: 0, fill: false },
+      { label: `Faixa típica superior (${unit})`, data: [...seasonalMaxData, seasonalAnalysis.available ? seasonalAnalysis.historical_range_max : null], borderColor: 'rgba(59,130,246,0.05)', backgroundColor: 'rgba(59,130,246,0.12)', pointRadius: 0, fill: '+1' },
+      { label: `Faixa típica inferior (${unit})`, data: [...seasonalMinData, seasonalAnalysis.available ? seasonalAnalysis.historical_range_min : null], borderColor: 'rgba(59,130,246,0.05)', backgroundColor: 'rgba(59,130,246,0.12)', pointRadius: 0, fill: false },
+      { label: `Média histórica da época (${unit})`, data: [...seasonalMeanData, seasonalAnalysis.available ? seasonalAnalysis.historical_mean : null], borderColor: '#2563eb', borderDash: [6, 4], pointRadius: 0, fill: false },
+      { label: 'Tendência recente', data: [...trendData, null], borderColor: '#f97316', borderDash: [4, 4], pointRadius: 0, fill: false },
+      { label: `Previsão (${unit})`, data: forecastData, borderColor: '#7c3aed', borderDash: [8, 5], backgroundColor: 'rgba(124,58,237,0.10)', pointRadius: 2, fill: false }
+    ], values, points: chartPoints, unit, full_count: total, sampled_count: sampled.length, downsampled: total > MAX_POINTS, seasonal_analysis: seasonalAnalysis, forecast, reference_lines: referenceLines };
   await pool.execute('UPDATE chart_generation_jobs SET progress_percent=80 WHERE id=?', [job.id]);
 
   let cacheId = null;
@@ -451,12 +497,12 @@ const generateChartForJob = async (job, selfNode) => {
     await connection.beginTransaction();
     const [cacheResult] = await connection.execute(
       `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid,
-        generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, generated_at)
-       VALUES (?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, summary_json, seasonal_analysis_json, forecast_json, payload_json, generated_at)
+       VALUES (?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
        ON DUPLICATE KEY UPDATE status='READY', generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid),
          generated_by_node_name=VALUES(generated_by_node_name), source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start),
-         date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), error_message=NULL, generated_at=NOW()`,
-      [crypto.randomUUID(), dataPointId, dataPointUuid, CHART_TYPE, selfNode?.id || null, selfUuid, selfName, job.uuid, total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary)]
+         date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), summary_json=VALUES(summary_json), seasonal_analysis_json=VALUES(seasonal_analysis_json), forecast_json=VALUES(forecast_json), payload_json=VALUES(payload_json), error_message=NULL, generated_at=NOW()`,
+      [crypto.randomUUID(), dataPointId, dataPointUuid, CHART_TYPE, selfNode?.id || null, selfUuid, selfName, job.uuid, total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary), JSON.stringify(summary), JSON.stringify(seasonalAnalysis), JSON.stringify(forecast), JSON.stringify(payload)]
     );
     if (cacheResult.insertId) {
       cacheId = cacheResult.insertId;
