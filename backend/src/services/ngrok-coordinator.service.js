@@ -12,6 +12,9 @@ const NGROK_OFFLINE_PATTERNS = ['ERR_NGROK_3200', 'endpoint fuzzylogic.ngrok.dev
 let timer = null;
 let running = false;
 let takeoverRunning = false;
+let ngrokClaimInProgress = false;
+let ngrokClaimStartedAt = null;
+const claimFailedUntilByNodeUuid = new Map();
 let lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: null, owner_node_name: null, public_url: null, last_checked_at: null, reason: null };
 
 const normalizeBaseUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
@@ -69,7 +72,9 @@ class NgrokCoordinatorService {
       'ngrok_status',
       'desired_ngrok_owner_node_uuid',
       'ngrok_takeover_requested_at',
-      'ngrok_last_check_at'
+      'ngrok_last_check_at',
+      'ngrok_claim_in_progress',
+      'ngrok_claim_started_at'
     ]);
     const ownerUuid = states.ngrok_owner_node_uuid?.state_value || lastStatus.owner_node_uuid || null;
     const owner = ownerUuid ? await repo.findByNodeUuid(ownerUuid) : null;
@@ -84,7 +89,9 @@ class NgrokCoordinatorService {
       desired_ngrok_owner_node_uuid: states.desired_ngrok_owner_node_uuid?.state_value || null,
       takeover_requested_at: states.ngrok_takeover_requested_at?.state_value || null,
       last_checked_at: states.ngrok_last_check_at?.state_value || lastStatus.last_checked_at || null,
-      reason: lastStatus.reason || null
+      reason: lastStatus.reason || null,
+      ngrok_claim_in_progress: states.ngrok_claim_in_progress ? states.ngrok_claim_in_progress.state_value === 'true' : ngrokClaimInProgress,
+      ngrok_claim_started_at: states.ngrok_claim_started_at?.state_value || ngrokClaimStartedAt
     };
   }
 
@@ -142,18 +149,147 @@ class NgrokCoordinatorService {
     }));
   }
 
+  async setClaimInProgress(inProgress) {
+    ngrokClaimInProgress = Boolean(inProgress);
+    ngrokClaimStartedAt = inProgress ? new Date().toISOString() : null;
+    await repo.setRuntimeState('ngrok_claim_in_progress', ngrokClaimInProgress ? 'true' : 'false');
+    await repo.setRuntimeState('ngrok_claim_started_at', ngrokClaimStartedAt || '');
+  }
+
+  isClaimTimedOut() {
+    if (!ngrokClaimInProgress || !ngrokClaimStartedAt) return false;
+    return Date.now() - new Date(ngrokClaimStartedAt).getTime() > Number(env.ngrokClaimTimeoutMs || 15000);
+  }
+
+  getExpectedPublicUrl(fallbackUrl = null) {
+    return env.ngrokDomain ? `https://${env.ngrokDomain}` : fallbackUrl;
+  }
+
+  isTemporarilyIneligible(node) {
+    const until = claimFailedUntilByNodeUuid.get(node?.node_uuid);
+    if (!until) return false;
+    if (Date.now() >= until) {
+      claimFailedUntilByNodeUuid.delete(node.node_uuid);
+      return false;
+    }
+    return true;
+  }
+
+  markClaimFailed(node, error) {
+    if (!node?.node_uuid) return;
+    const cooldownMs = Math.max(Number(env.ngrokClaimTimeoutMs || 15000), Number(env.ngrokTakeoverGraceMs || 10000));
+    claimFailedUntilByNodeUuid.set(node.node_uuid, Date.now() + cooldownMs);
+    logger.warn(`[ngrok-claim] node=${node.node_name || node.node_uuid} temporariamente inelegível por ${cooldownMs}ms: ${error?.message || error || 'claim_failed'}`);
+  }
+
+  async validateClaimHealth(publicUrl, owner) {
+    logger.info('[ngrok] túnel iniciado, validando endpoint...');
+    const checked = await checkNgrokHealth(publicUrl);
+    if (!checked.online) {
+      const error = new Error(`health_check_failed:${checked.reason || 'unknown'}`);
+      error.health = checked;
+      await repo.markNgrokOwner(owner?.node_uuid, publicUrl, 'FAILED', { skipSyncEvent: true, reason: 'ngrok-claim-failed' });
+      await repo.setRuntimeState('ngrok_status', 'FAILED');
+      throw error;
+    }
+    logger.info(`[ngrok-check] status=ONLINE owner=${owner?.node_name || owner?.node_uuid || '-'}`);
+    return checked;
+  }
+
   async claimLocal(publicUrl = null, options = {}) {
     const self = await repo.getSelfNode();
     if (!self) throw new Error('Servidor self não configurado.');
-    const url = publicUrl || ngrokService.getPublicUrl() || (env.ngrokDomain ? `https://${env.ngrokDomain}` : null);
+    const url = this.getExpectedPublicUrl(publicUrl || ngrokService.getPublicUrl()) || publicUrl || ngrokService.getPublicUrl();
+    await this.validateClaimHealth(url, self);
     await repo.markNgrokOwner(self.node_uuid, url, ONLINE, { reason: options.reason || 'ngrok-claim' });
     await repo.setRuntimeState('desired_ngrok_owner_node_uuid', '');
     await repo.setRuntimeState('ngrok_owner_node_name', self.node_name);
     await repo.setRuntimeState('ngrok_public_url', url || '');
+    await this.setClaimInProgress(false);
     lastStatus = { ok: true, ngrok_online: true, owner_node_uuid: self.node_uuid, owner_node_name: self.node_name, public_url: url, last_checked_at: new Date().toISOString(), reason: options.reason || 'claim' };
-    logger.info(`[ngrok] tunnel active owner=${self.node_name} url=${url}`);
+    logger.info(`[ngrok] túnel ativo owner=${self.node_name} url=${url}`);
+    logger.info(`[ngrok-claim] concluído owner=${self.node_name}`);
     if (!options.skipBroadcast) await this.broadcastClaim(self, url, ONLINE);
     return lastStatus;
+  }
+
+  async claimNgrokLocally(reason = 'election') {
+    if (takeoverRunning) return { ok: true, claim_in_progress: true, message: 'Claim da ngrok já está em andamento.' };
+    takeoverRunning = true;
+    await this.setClaimInProgress(true);
+    const self = await repo.getSelfNode();
+    try {
+      const existingUrl = ngrokService.getPublicUrl();
+      const expectedUrl = this.getExpectedPublicUrl(existingUrl);
+      if (existingUrl) {
+        const checked = await checkNgrokHealth(expectedUrl || existingUrl);
+        if (checked.online) {
+          const claimed = await this.claimLocal(expectedUrl || existingUrl, { reason });
+          return { ok: true, already_active: true, message: 'Ngrok já estava ativa localmente.', status: claimed };
+        }
+      }
+
+      logger.info(`[ngrok] iniciando túnel owner=${self?.node_name || 'self'} reason=${reason}`);
+      const startedUrl = await ngrokService.startTunnelWithRetry(env.port);
+      const publicUrl = this.getExpectedPublicUrl(startedUrl) || startedUrl;
+      const claimed = await this.claimLocal(publicUrl, { reason });
+      return { ok: true, message: 'Ngrok assumida por esta máquina.', status: claimed };
+    } catch (error) {
+      logger.error(`[ngrok] falha ao iniciar túnel owner=${self?.node_name || 'self'} error=${error.message}`);
+      await repo.setRuntimeState('ngrok_status', 'FAILED');
+      await this.setClaimInProgress(false);
+      this.markClaimFailed(self, error);
+      throw error;
+    } finally {
+      takeoverRunning = false;
+      if (!lastStatus.ngrok_online) await this.setClaimInProgress(false);
+    }
+  }
+
+  async requestRemoteNgrokClaim(winner, reason = 'election') {
+    const self = await repo.getSelfNode();
+    const targetUrl = this.getNodeControlUrl(winner);
+    if (!targetUrl) {
+      const error = new Error(`Nó vencedor ${winner.node_name || winner.node_uuid} não tem URL local/Tailscale para claim remoto.`);
+      this.markClaimFailed(winner, error);
+      throw error;
+    }
+    await this.setClaimInProgress(true);
+    logger.info(`[ngrok-election] vencedor remoto ${winner.node_name || winner.node_uuid}; solicitando claim remoto`);
+    try {
+      const response = await fetchWithTimeout(`${normalizeBaseUrl(targetUrl)}/api/cluster/ngrok/claim-local`, Number(env.ngrokClaimTimeoutMs || 15000), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Cluster-Secret': env.clusterKey || env.sessionSecret || '' },
+        body: JSON.stringify({
+          requested_by_node_uuid: self?.node_uuid,
+          requested_by_node_name: self?.node_name,
+          reason,
+          ngrok_domain: env.ngrokDomain || null
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.message || `HTTP_${response.status}`);
+      await this.setClaimInProgress(false);
+      return { ok: true, message: 'Solicitação para claim remoto enviada.', target_node_uuid: winner.node_uuid, target_node_name: winner.node_name, remote: data };
+    } catch (error) {
+      logger.error(`[ngrok-claim] falha ao solicitar claim remoto winner=${winner.node_name || winner.node_uuid} error=${error.message}`);
+      this.markClaimFailed(winner, error);
+      await this.setClaimInProgress(false);
+      throw error;
+    }
+  }
+
+  async handleNgrokElectionWinner(winner, reason = 'election') {
+    if (!winner) {
+      logger.info('[ngrok-election] nenhum vencedor elegível');
+      return { ok: false, no_winner: true };
+    }
+    const self = await repo.getSelfNode();
+    if (winner.node_uuid === self?.node_uuid) {
+      logger.info(`[ngrok-election] vencedor local ${winner.node_name || winner.node_uuid}; iniciando ngrok`);
+      return this.claimNgrokLocally(reason);
+    }
+    return this.requestRemoteNgrokClaim(winner, reason);
   }
 
   async releaseLocal(payload = {}) {
@@ -186,22 +322,12 @@ class NgrokCoordinatorService {
       if (node.is_self) checked.push({ ...node, status: ONLINE });
       else checked.push(await healthService.checkNode(node).catch(() => ({ ...node, status: OFFLINE })));
     }
-    const onlineNodes = checked.filter((node) => node.status === ONLINE);
+    const onlineNodes = checked.filter((node) => node.status === ONLINE && !this.isTemporarilyIneligible(node));
     return sortNgrokCandidates(onlineNodes)[0] || null;
   }
 
   async startLocalTunnel(reason = 'manual_takeover') {
-    if (takeoverRunning) return { ok: true, message: 'Takeover da ngrok já está em andamento.' };
-    takeoverRunning = true;
-    try {
-      const self = await repo.getSelfNode();
-      logger.info(`[ngrok] ${self?.node_name || 'self'} starting tunnel`);
-      const url = await ngrokService.startTunnelWithRetry(env.port);
-      const claimed = await this.claimLocal(url, { reason });
-      return { ok: true, message: 'Ngrok assumida por esta máquina.', status: claimed };
-    } finally {
-      takeoverRunning = false;
-    }
+    return this.claimNgrokLocally(reason);
   }
 
   async assume(payload = {}) {
@@ -227,16 +353,16 @@ class NgrokCoordinatorService {
     }
 
     if (target.node_uuid === self.node_uuid) {
-      return this.startLocalTunnel('manual_takeover');
+      return this.claimNgrokLocally('manual_takeover');
     }
 
     const targetUrl = this.getNodeControlUrl(target);
     if (!targetUrl) throw new Error('Nó alvo não tem URL local/Tailscale para receber a solicitação.');
     logger.info(`[ngrok-takeover] desired owner ${target.node_name} waiting to claim`);
-    const response = await fetchWithTimeout(`${normalizeBaseUrl(targetUrl)}/api/cluster/ngrok/assume`, Number(env.publicUrlCheckTimeoutMs || 3000) + Number(env.ngrokTakeoverGraceMs || 10000), {
+    const response = await fetchWithTimeout(`${normalizeBaseUrl(targetUrl)}/api/cluster/ngrok/claim-local`, Number(env.publicUrlCheckTimeoutMs || 3000) + Number(env.ngrokTakeoverGraceMs || 10000), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cluster-Secret': env.clusterKey || env.sessionSecret || '' },
-      body: JSON.stringify({ target_node_uuid: target.node_uuid, skip_release: true })
+      body: JSON.stringify({ requested_by_node_uuid: self.node_uuid, requested_by_node_name: self.node_name, reason: 'manual_takeover', ngrok_domain: env.ngrokDomain || null })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) throw new Error(data.message || `Falha ao solicitar takeover remoto (${response.status}).`);
@@ -267,29 +393,47 @@ class NgrokCoordinatorService {
         await repo.markNgrokOwner(onlineOwner.node_uuid, onlineOwner.public_url, ONLINE, { skipSyncEvent: true, reason: 'ngrok-check' });
         await repo.setRuntimeState('ngrok_owner_node_name', onlineOwner.node_name);
         await repo.setRuntimeState('ngrok_public_url', onlineOwner.public_url || '');
+        await this.setClaimInProgress(false);
         lastStatus = { ok: true, ngrok_online: true, owner_node_uuid: onlineOwner.node_uuid, owner_node_name: onlineOwner.node_name, public_url: onlineOwner.public_url, last_checked_at: new Date().toISOString(), reason: ONLINE };
         logger.info(`[ngrok-check] status=ONLINE owner=${onlineOwner.node_name}`);
         if (!onlineOwner.is_self && ngrokService.getPublicUrl()) await ngrokService.stopTunnel();
         return lastStatus;
       }
 
-      logger.info(`[ngrok-check] status=OFFLINE reason=${offlineReason}`);
+      const previousOwner = status.owner_node_name || status.owner_node_uuid || null;
+      logger.info(`[ngrok-check] status=OFFLINE reason=${offlineReason}${previousOwner ? ` previous_owner=${previousOwner}` : ''}`);
       await repo.setRuntimeState('ngrok_status', OFFLINE);
       await repo.setRuntimeState('ngrok_last_check_at', new Date().toISOString());
+      if (status.owner_node_uuid) {
+        await repo.setRuntimeState('ngrok_owner_node_uuid', '');
+        await repo.setRuntimeState('ngrok_owner_node_name', '');
+      }
+      if (ngrokClaimInProgress && !this.isClaimTimedOut()) {
+        logger.info(`[ngrok-claim] tentativa em andamento desde ${ngrokClaimStartedAt}; aguardando timeout=${Number(env.ngrokClaimTimeoutMs || 15000)}ms`);
+        lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: status.owner_node_uuid || null, owner_node_name: status.owner_node_name || null, public_url: status.public_url || null, last_checked_at: new Date().toISOString(), reason: 'claim_in_progress' };
+        return lastStatus;
+      }
+      if (ngrokClaimInProgress && this.isClaimTimedOut()) {
+        logger.warn(`[ngrok-claim] tentativa anterior expirou após ${Number(env.ngrokClaimTimeoutMs || 15000)}ms; nova eleição permitida`);
+        await this.setClaimInProgress(false);
+      }
       const desired = await repo.getRuntimeState('desired_ngrok_owner_node_uuid');
-      let winner = desired?.state_value ? nodes.find((node) => node.node_uuid === desired.state_value) : null;
+      let winner = desired?.state_value ? nodes.find((node) => node.node_uuid === desired.state_value && !this.isTemporarilyIneligible(node)) : null;
       if (!winner) winner = await this.electWinner();
       if (!winner) {
-        logger.info('[ngrok-election] nenhum candidato elegível; aguardando próximo ciclo');
+        logger.info('[ngrok-election] nenhum vencedor elegível');
         lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: null, owner_node_name: null, public_url: null, last_checked_at: new Date().toISOString(), reason: offlineReason };
         return lastStatus;
       }
       logger.info(`[ngrok-election] winner=${winner.node_name} reason=${winner.role === 'HOST' ? 'HOST_PRIORITY' : 'POWER_SCORE'}`);
-      if (winner?.node_uuid && self?.node_uuid && winner.node_uuid === self.node_uuid) {
-        await this.startLocalTunnel(desired?.state_value === self.node_uuid ? 'manual_takeover' : 'auto_election');
+      try {
+        await this.handleNgrokElectionWinner(winner, desired?.state_value === winner.node_uuid ? 'manual_takeover' : 'auto_election');
+        return lastStatus;
+      } catch (error) {
+        logger.error(`[ngrok-election] winner=${winner.node_name} action_failed error=${error.message}`);
+        lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: winner?.node_uuid || null, owner_node_name: winner?.node_name || null, public_url: winner?.public_url || null, last_checked_at: new Date().toISOString(), reason: error.message || offlineReason };
+        return lastStatus;
       }
-      lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: winner?.node_uuid || null, owner_node_name: winner?.node_name || null, public_url: winner?.public_url || null, last_checked_at: new Date().toISOString(), reason: offlineReason };
-      return lastStatus;
     } finally {
       running = false;
     }

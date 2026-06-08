@@ -294,7 +294,7 @@ class ClusterNodeRepository {
     const node = nodeUuid ? await this.findByNodeUuid(nodeUuid) : null;
     let updated = null;
     if (node) {
-      const shouldClearPublicUrl = status !== 'ONLINE' && /ngrok/i.test(String(node.public_url || ''));
+      const shouldClearPublicUrl = status === 'OFFLINE' && /ngrok/i.test(String(node.public_url || ''));
       updated = await this.updateNodeStructuralData(node.id, {
         public_url: status === 'ONLINE' ? (publicUrl || node.public_url || null) : (shouldClearPublicUrl ? null : node.public_url),
         ngrok_enabled_currently: status === 'ONLINE' ? 1 : 0,
