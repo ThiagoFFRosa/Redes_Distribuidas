@@ -20,7 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
         recordBeingEdited: null,
         joinRequests: [],
         syncStatusByUuid: new Map(),
-        syncStatusByName: new Map()
+        syncStatusByName: new Map(),
+        ngrokStatus: null
     };
 
     const authHeaders = () => {
@@ -944,11 +945,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             closeSelfModal();
-            const [nodesData, syncData] = await Promise.all([
+            const [nodesData, syncData, ngrokData] = await Promise.all([
                 apiFetch('/api/cluster/nodes'),
-                apiFetch('/api/sync/status').catch(() => ({ nodes: [] }))
+                apiFetch('/api/sync/status').catch(() => ({ nodes: [] })),
+                apiFetch('/api/cluster/ngrok/status').catch(() => null)
             ]);
             state.servidores = nodesData.nodes || [];
+            state.ngrokStatus = ngrokData;
             state.syncStatusByUuid = new Map((syncData.nodes || []).map((node) => [node.node_uuid, node]));
             state.syncStatusByName = new Map((syncData.nodes || []).map((node) => [node.node_name, node]));
         } catch (error) {
@@ -957,30 +960,46 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    const renderNgrokStatus = () => {
+        const statusEl = document.getElementById('ngrok-status-value');
+        if (!statusEl) return;
+        const ngrok = state.ngrokStatus || {};
+        document.getElementById('ngrok-status-value').textContent = ngrok.ngrok_status || (ngrok.ngrok_online ? 'ONLINE' : 'OFFLINE');
+        document.getElementById('ngrok-owner-value').textContent = ngrok.owner_node_name || '-';
+        document.getElementById('ngrok-url-value').textContent = ngrok.public_url || '-';
+        document.getElementById('ngrok-last-check-value').textContent = ngrok.last_checked_at ? dateLabel(ngrok.last_checked_at) : '-';
+    };
+
     const renderServidores = () => {
         const tbody = document.getElementById('tbody-servidores');
         if(!tbody) return;
+        renderNgrokStatus();
 
         tbody.innerHTML = '';
         state.servidores.forEach(s => {
-            const isHost = s.role === 'HOST';
             const isOnline = s.status === 'ONLINE';
-            const roleBadge = `<span class="px-2.5 py-1 text-xs font-semibold rounded-md bg-slate-100 text-slate-700">${s.role}</span>`;
-            const statusInd = `<div class="flex items-center gap-1.5 text-sm font-medium ${isOnline ? 'text-green-600':'text-red-600'}"><span class="w-2 h-2 rounded-full ${isOnline ? 'bg-green-500':'bg-red-500'}"></span>${s.status}</div>`;
+            const isNgrokOwner = s.node_uuid && state.ngrokStatus?.owner_node_uuid === s.node_uuid && state.ngrokStatus?.ngrok_online;
+            const roleBadge = `<span class="px-2.5 py-1 text-xs font-semibold rounded-md bg-slate-100 text-slate-700">${escapeHtml(s.role)}</span>`;
+            const statusInd = `<div class="flex items-center gap-1.5 text-sm font-medium ${isOnline ? 'text-green-600':'text-red-600'}"><span class="w-2 h-2 rounded-full ${isOnline ? 'bg-green-500':'bg-red-500'}"></span>${escapeHtml(s.status)}</div>`;
             const sync = state.syncStatusByUuid.get(s.node_uuid) || state.syncStatusByName.get(s.node_name) || {};
-            const targetUrl = sync.target_url || (s.public_url ? `${String(s.public_url).replace(/\/$/, '')}/api/sync/apply` : (s.tailscale_ip ? `http://${s.tailscale_ip}:${s.port || 3000}/api/sync/apply` : '-'));
+            const localUrl = s.local_url || (s.tailscale_ip ? `http://${s.tailscale_ip}:${s.port || 3000}` : null);
+            const targetUrl = sync.target_url || (localUrl ? `${String(localUrl).replace(/\/$/, '')}/api/sync/apply` : (s.public_url ? `${String(s.public_url).replace(/\/$/, '')}/api/sync/apply` : '-'));
+            const ngrokAction = isNgrokOwner
+                ? '<button class="px-2 py-1 border rounded bg-green-50 text-green-700 cursor-default" disabled>Ngrok ativa</button>'
+                : (isOnline ? `<button class="px-2 py-1 border rounded bg-indigo-600 text-white" data-action="assume-ngrok" data-node-uuid="${escapeHtml(s.node_uuid || '')}">Assumir ngrok</button>` : '<button class="px-2 py-1 border rounded text-slate-400 cursor-not-allowed" disabled>Offline</button>');
             tbody.innerHTML += `
                 <tr class="hover:bg-slate-50 transition-colors">
-                    <td class="p-4 font-semibold text-dark">${escapeHtml(s.node_name || '-')}${s.is_self ? ' (Este servidor)' : ''}</td>
+                    <td class="p-4 font-semibold text-dark">${escapeHtml(s.node_name || '-')}${s.is_self ? ' (Este servidor)' : ''}${isNgrokOwner ? '<div><span class="inline-block mt-1 px-2 py-0.5 rounded bg-green-100 text-green-700 text-xs">Ngrok ativa</span></div>' : ''}</td>
                     <td class="p-4 text-sm font-mono text-slate-600">${escapeHtml(s.tailscale_ip || '-')}</td>
                     <td class="p-4">${roleBadge}</td>
                     <td class="p-4">${statusInd}</td>
-                    <td class="p-4 text-xs font-mono text-slate-600">${escapeHtml(s.public_url || '-')}</td>
+                    <td class="p-4 text-xs font-mono text-slate-600 break-all">${escapeHtml(localUrl || '-')}</td>
+                    <td class="p-4 text-xs font-mono text-slate-600 break-all">${escapeHtml(s.public_url || '-')}</td>
                     <td class="p-4 text-sm font-mono">${s.port || 3000}</td>
                     <td class="p-4 text-xs font-mono text-slate-600 max-w-xs break-all">${escapeHtml(targetUrl)}</td>
                     <td class="p-4 text-sm">${sync.pending_events ?? (s.is_self ? '-' : '0')}</td>
                     <td class="p-4"><span class="font-mono">${s.power_score ?? 5}/10</span></td>
-                    <td class="p-4 text-right flex justify-end gap-2">${s.is_self ? '<button class="px-2 py-1 border rounded" data-action="edit-self">Editar</button><button class="px-2 py-1 border rounded bg-indigo-600 text-white" data-action="assume-ngrok">Assumir ngrok</button>' : '<button class="px-2 py-1 border rounded" data-action="fix-url-tailscale" data-node-id="'+s.id+'">Corrigir URL pelo IP Tailscale</button>'}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
+                    <td class="p-4 text-right flex justify-end gap-2"><button class="px-2 py-1 border rounded" data-action="edit-self" ${s.is_self ? '' : 'disabled title="Edite no servidor local do node"'}>Editar</button>${ngrokAction}${s.is_self ? '' : '<button class="px-2 py-1 border rounded" data-action="fix-url-tailscale" data-node-id="'+s.id+'">Corrigir URL pelo IP Tailscale</button>'}<button class="px-2 py-1 border rounded" onclick="fetch('/api/cluster/nodes/${s.id}/healthcheck',{method:'POST'}).then(()=>window.location.reload())">Testar conexão</button></td>
                 </tr>`;
         });
     }
@@ -1211,10 +1230,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (assumeBtn) {
         assumeBtn.disabled = true;
         try {
-          const data = await apiFetch('/api/cluster/ngrok/assume', { method: 'POST', body: JSON.stringify({}) });
+          const data = await apiFetch('/api/cluster/ngrok/assume', { method: 'POST', body: JSON.stringify({ target_node_uuid: assumeBtn.dataset.nodeUuid }) });
+          setFeedback('join-requests-feedback', data.message || 'Solicitação enviada.', false);
+          setTimeout(async () => { await fetchClusterNodes(); renderServidores(); }, 2500);
           await fetchClusterNodes();
           renderServidores();
-          setFeedback('join-requests-feedback', data.message || 'Esta máquina tentou assumir a ngrok.', false);
         } catch (error) {
           setFeedback('join-requests-feedback', `Erro ao assumir ngrok: ${error.message}`, true);
         } finally {

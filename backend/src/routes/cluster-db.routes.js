@@ -5,7 +5,7 @@ const healthService = require('../services/cluster-health.service');
 const { requireAuth } = require('../services/auth.service');
 const env = require('../config/env');
 const logger = require('../utils/logger');
-const { getNodeSyncTarget } = require('../utils/sync-targets');
+const { getNodeSyncTarget, getTailscaleBaseUrl } = require('../utils/sync-targets');
 const syncCoordinator = require('../services/sync-coordinator.service');
 const ngrokCoordinator = require('../services/ngrok-coordinator.service');
 const { detectTailscaleIp } = require('../utils/network-addresses');
@@ -73,17 +73,19 @@ const resolveRequestedRoleForJoin = (self) => {
 };
 
 const normalizeNodePublicUrl = (node = {}) => {
-  const explicitUrl = normalizeUrl(node.public_url);
-  if (explicitUrl) return explicitUrl;
-  const port = normalizePort(node.port) || env.port;
-  return node.tailscale_ip ? `http://${String(node.tailscale_ip).trim()}:${port}` : null;
+  const url = normalizeUrl(node.public_url);
+  if (!url) return null;
+  return /ngrok/i.test(url) || Number(node.ngrok_enabled_currently || 0) === 1 ? url : null;
 };
+
+const getNodeLocalUrl = (node = {}) => getTailscaleBaseUrl(node, normalizePort(node.port) || env.port);
 
 const serializeClusterNode = (node = {}) => ({
   id: node.id,
   node_uuid: node.node_uuid || null,
   node_name: node.node_name || '',
   tailscale_ip: node.tailscale_ip || '',
+  local_url: getNodeLocalUrl(node),
   public_url: normalizeNodePublicUrl(node),
   port: normalizePort(node.port) || env.port,
   role: ROLES.includes(node.role) ? node.role : 'UNKNOWN',
@@ -100,6 +102,7 @@ const serializeClusterNode = (node = {}) => ({
   ngrok_enabled_currently: Number(node.ngrok_enabled_currently || 0),
   ngrok_status: node.ngrok_status || 'UNKNOWN',
   ngrok_last_seen_at: node.ngrok_last_seen_at || null,
+  is_ngrok_owner: Number(node.ngrok_enabled_currently || 0) === 1,
   has_public_endpoint: Number(node.ngrok_enabled_currently || 0) === 1,
   sync_target_url: getNodeSyncTarget(node)
 });
@@ -208,6 +211,13 @@ const requireClusterSecret = (req, res, next) => {
   return next();
 };
 
+const requireAuthOrClusterSecret = (req, res, next) => {
+  const received = req.header('x-cluster-secret') || req.header('x-cluster-key');
+  const accepted = [env.clusterKey, env.sessionSecret].filter(Boolean);
+  if (received && accepted.includes(received)) return next();
+  return requireAuth(req, res, next);
+};
+
 const structuralFingerprint = (node = {}) => {
   const payload = {
     node_uuid: node.node_uuid || null,
@@ -282,13 +292,14 @@ router.post('/ngrok/release', requireClusterSecret, async (req, res) => {
 });
 
 router.post('/ngrok/claim', requireClusterSecret, async (req, res) => {
-  const { owner_node_uuid, public_url } = req.body || {};
+  const { owner_node_uuid, owner_node_name, public_url, status } = req.body || {};
   if (!owner_node_uuid) return res.status(400).json({ ok: false, message: 'owner_node_uuid obrigatório.' });
-  const node = await repo.markNgrokOwner(owner_node_uuid, normalizeUrl(public_url), 'ONLINE', { reason: 'ngrok-claim' });
+  const node = await repo.markNgrokOwner(owner_node_uuid, normalizeUrl(public_url), status || 'ONLINE', { reason: 'ngrok-claim' });
+  logger.info(`[ngrok-claim] owner updated ${owner_node_name || node?.node_name || owner_node_uuid}`);
   res.json({ ok: true, node: node ? serializeClusterNode(node) : null });
 });
 
-router.get('/ngrok/status', requireClusterSecret, async (_req, res) => {
+router.get('/ngrok/status', requireAuthOrClusterSecret, async (_req, res) => {
   res.json(await ngrokCoordinator.getStatus());
 });
 
@@ -379,12 +390,12 @@ router.get('/bootstrap', async (req, res) => {
 router.get('/self', allowInitialSelfStatus, handleGetSelf);
 router.post('/self', allowInitialSelfConfig, saveSelfNode);
 
-router.use(requireAuth);
-
-router.post('/ngrok/assume', async (_req, res) => {
-  try { res.json(await ngrokCoordinator.assumeLocal()); }
+router.post('/ngrok/assume', requireAuthOrClusterSecret, async (req, res) => {
+  try { res.json(await ngrokCoordinator.assume(req.body || {})); }
   catch (error) { res.status(503).json({ ok: false, message: error.message }); }
 });
+
+router.use(requireAuth);
 
 
 router.get('/nodes', async (_req, res) => res.json({ nodes: (await repo.getAllNodes()).map(serializeClusterNode) }));
