@@ -87,7 +87,7 @@ const getMeasurementPayloadById = async (id, connection = pool) => {
   return row && {
     uuid: row.uuid, data_point_uuid: row.data_point_uuid, measurement_type: row.measurement_type,
     value: num(row.value), unit: row.unit || 'm', measured_at: dateValue(row.measured_at), source: row.source,
-    observation: row.observation, created_at: dateValue(row.created_at)
+    observation: row.observation, deleted_at: dateValue(row.deleted_at), deleted_by_node_uuid: row.deleted_by_node_uuid || null, created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)
   };
 };
 
@@ -126,7 +126,7 @@ const getHistoricalMeasurementPayloadById = async (id, connection = pool) => {
   return row && {
     uuid: row.uuid, data_point_uuid: row.data_point_uuid, import_uuid: row.import_uuid, measured_at: dateOnly(row.measured_at),
     raw_value: num(row.raw_value), raw_unit: row.raw_unit || 'cm', value: num(row.value), unit: row.unit || 'm',
-    max_value: num(row.max_value), min_value: num(row.min_value), source: row.source || 'CSV_IMPORT', created_at: dateValue(row.created_at)
+    max_value: num(row.max_value), min_value: num(row.min_value), source: row.source || 'CSV_IMPORT', corrected_at: dateValue(row.corrected_at), corrected_by_node_uuid: row.corrected_by_node_uuid || null, correction_reason: row.correction_reason || null, original_value: num(row.original_value), original_measured_at: dateValue(row.original_measured_at), deleted_at: dateValue(row.deleted_at), deleted_by_node_uuid: row.deleted_by_node_uuid || null, created_at: dateValue(row.created_at), updated_at: dateValue(row.updated_at)
   };
 };
 

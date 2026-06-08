@@ -16,7 +16,8 @@ const migrations = [
   require('./migrations/013_data_point_location_review_status'),
   require('./migrations/014_remote_sync_origin_registry'),
   require('./migrations/015_data_point_source_key'),
-  require('./migrations/016_cluster_runtime_ngrok_diagnostics')
+  require('./migrations/016_cluster_runtime_ngrok_diagnostics'),
+  require('./migrations/017_point_records_audit_soft_delete')
 ];
 
 const ensureMigrationsTable = async (connection) => {

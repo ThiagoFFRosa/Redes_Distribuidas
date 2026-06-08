@@ -61,7 +61,7 @@ const getPointTimeSeries = async (dataPointUuid, connection = pool) => {
     `SELECT hm.measured_at AS date, hm.value, hm.unit, 'CSV' AS source
        FROM historical_measurements hm
        JOIN data_points dp ON dp.id = hm.data_point_id
-      WHERE dp.uuid = ?`,
+      WHERE dp.uuid = ? AND hm.deleted_at IS NULL`,
     [dataPointUuid]
   );
 
@@ -69,7 +69,7 @@ const getPointTimeSeries = async (dataPointUuid, connection = pool) => {
     `SELECT COALESCE(m.measured_at, m.created_at) AS date, m.value, m.unit, 'SITE' AS source
        FROM measurements m
        JOIN data_points dp ON dp.id = m.data_point_id
-      WHERE dp.uuid = ?`,
+      WHERE dp.uuid = ? AND m.deleted_at IS NULL`,
     [dataPointUuid]
   );
 

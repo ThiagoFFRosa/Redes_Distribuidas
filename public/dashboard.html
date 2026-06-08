@@ -560,6 +560,51 @@
       </div>
     </div>
 
+
+<div id="point-records-modal" class="fixed inset-0 bg-slate-950/60 z-50 hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-7xl max-h-[92vh] overflow-y-auto p-6">
+    <div class="flex justify-between items-start gap-4 mb-4">
+      <div>
+        <h3 id="point-records-title" class="text-xl font-bold text-dark">Dados do ponto</h3>
+        <p class="text-sm text-slate-500">Visualize, edite e exclua medições do site e registros históricos CSV. Alterações locais geram eventos de sincronização.</p>
+      </div>
+      <button id="close-point-records-modal" class="text-slate-400 hover:text-slate-700"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-6 gap-3 mb-4 text-sm">
+      <select id="point-records-source" class="border border-slate-300 rounded-lg px-3 py-2 bg-white"><option value="all">Todos</option><option value="site">Dados do site</option><option value="csv">Histórico CSV</option></select>
+      <select id="point-records-order" class="border border-slate-300 rounded-lg px-3 py-2 bg-white"><option value="desc">Mais recentes</option><option value="asc">Mais antigos</option></select>
+      <input id="point-records-from" type="date" class="border border-slate-300 rounded-lg px-3 py-2" title="Data inicial">
+      <input id="point-records-to" type="date" class="border border-slate-300 rounded-lg px-3 py-2" title="Data final">
+      <label class="inline-flex items-center gap-2 border border-slate-200 rounded-lg px-3 py-2"><input id="point-records-include-deleted" type="checkbox"> Incluir excluídos</label>
+      <button id="apply-point-records-filters" class="px-4 py-2 rounded-lg bg-primary text-white font-medium">Filtrar</button>
+    </div>
+    <div class="overflow-x-auto border border-slate-100 rounded-xl">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-slate-50 text-slate-500"><tr><th class="p-3 font-medium">Data/hora</th><th class="p-3 font-medium">Valor</th><th class="p-3 font-medium">Unidade</th><th class="p-3 font-medium">Origem</th><th class="p-3 font-medium">Fonte/importação</th><th class="p-3 font-medium">Criado em</th><th class="p-3 font-medium">Atualizado em</th><th class="p-3 font-medium text-right">Ações</th></tr></thead>
+        <tbody id="tbody-point-records" class="divide-y divide-slate-100"></tbody>
+      </table>
+    </div>
+    <div class="flex flex-col sm:flex-row justify-between items-center gap-3 mt-4">
+      <div id="point-records-feedback" class="text-sm"></div>
+      <div class="flex items-center gap-3"><button id="point-records-prev" class="px-3 py-1.5 border rounded-lg">Anterior</button><span id="point-records-page-info" class="text-sm text-slate-500"></span><button id="point-records-next" class="px-3 py-1.5 border rounded-lg">Próxima</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="edit-record-modal" class="fixed inset-0 bg-slate-950/70 z-[60] hidden items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 border border-slate-200">
+    <div class="flex justify-between items-start gap-4 mb-4"><div><h3 id="edit-record-title" class="text-xl font-bold text-dark">Editar dado</h3><p class="text-sm text-slate-500">A alteração será replicada para as outras máquinas via sync_events.</p></div><button id="close-edit-record-modal" type="button" class="text-slate-400 hover:text-slate-700"><i data-lucide="x" class="w-5 h-5"></i></button></div>
+    <div id="edit-record-csv-warning" class="hidden mb-4 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">Este dado veio de importação histórica. Informe o motivo da correção; a alteração será replicada para as demais máquinas.</div>
+    <form id="edit-record-form" class="space-y-4">
+      <div><label class="block text-sm font-medium text-slate-700 mb-1">Data/hora</label><input id="edit-record-date" type="datetime-local" class="w-full border border-slate-300 rounded-lg px-3 py-2" required></div>
+      <div class="grid grid-cols-2 gap-3"><div><label class="block text-sm font-medium text-slate-700 mb-1">Valor</label><input id="edit-record-value" type="number" step="0.001" class="w-full border border-slate-300 rounded-lg px-3 py-2" required></div><div><label class="block text-sm font-medium text-slate-700 mb-1">Unidade</label><input id="edit-record-unit" class="w-full border border-slate-300 rounded-lg px-3 py-2" value="m" required></div></div>
+      <div><label class="block text-sm font-medium text-slate-700 mb-1">Motivo/observação</label><textarea id="edit-record-reason" class="w-full border border-slate-300 rounded-lg px-3 py-2" rows="3" placeholder="Motivo da correção, especialmente para CSV"></textarea></div>
+      <div id="edit-record-error" class="text-sm text-red-600 min-h-5"></div>
+      <div class="flex justify-end gap-3"><button type="button" id="cancel-edit-record-modal" class="px-4 py-2 rounded-lg border border-slate-200">Cancelar</button><button type="submit" class="px-4 py-2 rounded-lg bg-primary text-white font-semibold">Salvar</button></div>
+    </form>
+  </div>
+</div>
+
     <!-- Scripts (Graficos e Funcionalidade) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

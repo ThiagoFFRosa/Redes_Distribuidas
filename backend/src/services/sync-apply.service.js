@@ -175,10 +175,10 @@ const upsertMeasurement = async (event, c) => {
   if (!p.uuid) throw new Error('measurement sem uuid');
   if (!dataPointId) return { status: 'deferred', reason: 'missing_data_point', message: `missing data_point_uuid=${p.data_point_uuid || '-'}` };
   await c.execute(
-    `INSERT INTO measurements (uuid, data_point_id, measurement_type, value, unit, measured_at, source, observation)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE data_point_id=VALUES(data_point_id), measurement_type=VALUES(measurement_type), value=VALUES(value), unit=VALUES(unit), measured_at=VALUES(measured_at), source=VALUES(source), observation=VALUES(observation)`,
-    [p.uuid, dataPointId, p.measurement_type || 'RIVER_LEVEL', p.value, p.unit || 'm', asDate(p.measured_at), p.source || 'MANUAL', p.observation || null]
+    `INSERT INTO measurements (uuid, data_point_id, measurement_type, value, unit, measured_at, source, observation, deleted_at, deleted_by_node_uuid, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, NOW()), COALESCE(?, NOW()))
+     ON DUPLICATE KEY UPDATE data_point_id=VALUES(data_point_id), measurement_type=VALUES(measurement_type), value=VALUES(value), unit=VALUES(unit), measured_at=VALUES(measured_at), source=VALUES(source), observation=VALUES(observation), deleted_at=VALUES(deleted_at), deleted_by_node_uuid=VALUES(deleted_by_node_uuid), updated_at=VALUES(updated_at)`,
+    [p.uuid, dataPointId, p.measurement_type || 'RIVER_LEVEL', p.value, p.unit || 'm', asDate(p.measured_at), p.source || 'MANUAL', p.observation || null, asDate(p.deleted_at), p.deleted_by_node_uuid || null, asDate(p.created_at), asDate(p.updated_at)]
   );
   await chartService.markChartCacheStale(p.data_point_uuid, c).catch((error) => logger.warn(`[historical-chart] falha ao marcar cache stale após sync measurement data_point_uuid=${p.data_point_uuid || '-'}: ${error.message}`));
 };
@@ -220,10 +220,10 @@ const upsertHistoricalMeasurement = async (event, c) => {
   if (!p.uuid) throw new Error('historical_measurement sem uuid');
   if (!dataPointId || (p.import_uuid && !importId)) return { status: 'deferred', reason: 'missing_dependency', message: `missing data_point_uuid=${p.data_point_uuid || '-'} import_uuid=${p.import_uuid || '-'}` };
   await c.execute(
-    `INSERT INTO historical_measurements (uuid, data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value, source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), import_id=VALUES(import_id), raw_value=VALUES(raw_value), raw_unit=VALUES(raw_unit), value=VALUES(value), unit=VALUES(unit), max_value=VALUES(max_value), min_value=VALUES(min_value), source=VALUES(source)`,
-    [p.uuid, dataPointId, importId, asDateOnly(p.measured_at), p.raw_value ?? null, p.raw_unit || 'cm', p.value, p.unit || 'm', p.max_value ?? null, p.min_value ?? null, p.source || 'CSV_IMPORT']
+    `INSERT INTO historical_measurements (uuid, data_point_id, import_id, measured_at, raw_value, raw_unit, value, unit, max_value, min_value, source, corrected_at, corrected_by_node_uuid, correction_reason, original_value, original_measured_at, deleted_at, deleted_by_node_uuid, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, NOW()), COALESCE(?, NOW()))
+     ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), import_id=VALUES(import_id), raw_value=VALUES(raw_value), raw_unit=VALUES(raw_unit), value=VALUES(value), unit=VALUES(unit), max_value=VALUES(max_value), min_value=VALUES(min_value), source=VALUES(source), corrected_at=VALUES(corrected_at), corrected_by_node_uuid=VALUES(corrected_by_node_uuid), correction_reason=VALUES(correction_reason), original_value=VALUES(original_value), original_measured_at=VALUES(original_measured_at), deleted_at=VALUES(deleted_at), deleted_by_node_uuid=VALUES(deleted_by_node_uuid), updated_at=VALUES(updated_at)`,
+    [p.uuid, dataPointId, importId, asDateOnly(p.measured_at), p.raw_value ?? null, p.raw_unit || 'cm', p.value, p.unit || 'm', p.max_value ?? null, p.min_value ?? null, p.source || 'CSV_IMPORT', asDate(p.corrected_at), p.corrected_by_node_uuid || null, p.correction_reason || null, p.original_value ?? null, asDate(p.original_measured_at), asDate(p.deleted_at), p.deleted_by_node_uuid || null, asDate(p.created_at), asDate(p.updated_at)]
   );
   await chartService.markChartCacheStale(p.data_point_uuid, c).catch((error) => logger.warn(`[historical-chart] falha ao marcar cache stale após sync CSV data_point_uuid=${p.data_point_uuid || '-'}: ${error.message}`));
 };
