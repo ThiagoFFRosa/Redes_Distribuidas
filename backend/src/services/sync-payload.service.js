@@ -12,7 +12,7 @@ const dateOnly = (value) => {
   return mysqlDateTime ? mysqlDateTime.slice(0, 10) : null;
 };
 const num = (value) => (value == null ? null : Number(value));
-const MAX_CHART_SYNC_POINTS = 1000;
+const MAX_CHART_SYNC_POINTS = 1500;
 
 const downsampleSeries = (items, maxItems = MAX_CHART_SYNC_POINTS) => {
   if (!Array.isArray(items) || items.length <= maxItems) return items;
