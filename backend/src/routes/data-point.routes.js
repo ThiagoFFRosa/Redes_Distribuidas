@@ -6,6 +6,7 @@ const router = express.Router();
 const allowedTypes = new Set(['RIVER_LEVEL']);
 const allowedStatuses = new Set(['ACTIVE', 'INACTIVE']);
 const historicalChartService = require('../services/historical-chart.service');
+const recordsService = require('../services/data-point-records.service');
 const { isBlank, isValidLatitude, isValidLongitude, normalizeLocationForStorage } = require('../utils/coordinates');
 
 const optionalNumber = (value) => {
@@ -67,6 +68,56 @@ router.get('/', async (req, res, next) => {
   try { res.json({ ok: true, data: await repository.findAll(req.query) }); } catch (error) { next(error); }
 });
 
+
+router.get('/:id/records', requireAuth, async (req, res, next) => {
+  try {
+    const result = await recordsService.listRecords(req.params.id, req.query || {});
+    if (!result) return res.status(404).json({ ok: false, message: 'Ponto não encontrado.' });
+    res.json(result);
+  } catch (error) { next(error); }
+});
+
+router.put('/:pointId/records/site/:recordUuid', requireAuth, async (req, res, next) => {
+  try {
+    const record = await recordsService.updateSiteRecord(req.params.pointId, req.params.recordUuid, req.body || {});
+    res.json({ ok: true, record });
+  } catch (error) { next(error); }
+});
+
+router.delete('/:pointId/records/site/:recordUuid', requireAuth, async (req, res, next) => {
+  try {
+    const record = await recordsService.deleteSiteRecord(req.params.pointId, req.params.recordUuid);
+    res.json({ ok: true, message: 'Registro excluído e enviado para sincronização.', record });
+  } catch (error) { next(error); }
+});
+
+router.post('/:pointId/records/site/:recordUuid/restore', requireAuth, async (req, res, next) => {
+  try {
+    const record = await recordsService.restoreSiteRecord(req.params.pointId, req.params.recordUuid);
+    res.json({ ok: true, message: 'Registro restaurado e enviado para sincronização.', record });
+  } catch (error) { next(error); }
+});
+
+router.put('/:pointId/records/csv/:recordUuid', requireAuth, async (req, res, next) => {
+  try {
+    const record = await recordsService.updateCsvRecord(req.params.pointId, req.params.recordUuid, req.body || {});
+    res.json({ ok: true, record });
+  } catch (error) { next(error); }
+});
+
+router.delete('/:pointId/records/csv/:recordUuid', requireAuth, async (req, res, next) => {
+  try {
+    const record = await recordsService.deleteCsvRecord(req.params.pointId, req.params.recordUuid);
+    res.json({ ok: true, message: 'Registro histórico excluído e enviado para sincronização.', record });
+  } catch (error) { next(error); }
+});
+
+router.post('/:pointId/records/csv/:recordUuid/restore', requireAuth, async (req, res, next) => {
+  try {
+    const record = await recordsService.restoreCsvRecord(req.params.pointId, req.params.recordUuid);
+    res.json({ ok: true, message: 'Registro histórico restaurado e enviado para sincronização.', record });
+  } catch (error) { next(error); }
+});
 
 router.get('/:id/historical-chart', async (req, res, next) => {
   try {

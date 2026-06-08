@@ -14,6 +14,8 @@ document.addEventListener('DOMContentLoaded', () => {
         historicalChart: null,
         historicalPollTimer: null,
         currentHistoricalPointId: null,
+        pointRecords: { point: null, source: 'all', order: 'desc', page: 1, limit: 50, includeDeleted: false, total: 0, records: [] },
+        recordBeingEdited: null,
         joinRequests: [],
         syncStatusByUuid: new Map(),
         syncStatusByName: new Map()
@@ -195,11 +197,98 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td class="p-4 text-xs font-mono text-slate-500">${validLocation ? `${Number(p.latitude).toFixed(4)}, ${Number(p.longitude).toFixed(4)}` : '-'}</td>
                     <td class="p-4"><span class="px-2 py-1 rounded ${badge} text-xs font-semibold text-center inline-block w-20">${escapeHtml(p.status)}</span>${reviewBadge}</td>
                     <td class="p-4 text-xs text-slate-600"><div>Risco: ${formatLevel(p.warning_level, p.measurement_unit)}</div><div>Crítico: ${formatLevel(p.critical_level, p.measurement_unit)}</div></td>
-                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="historical-point" data-id="${p.id}" class="px-2 py-1 border rounded text-secondary hover:bg-teal-50">Histórico</button><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">${validLocation ? 'Editar' : 'Corrigir localização'}</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
+                    <td class="p-4 text-right"><div class="inline-flex flex-wrap justify-end gap-2"><button data-action="historical-point" data-id="${p.id}" class="px-2 py-1 border rounded text-secondary hover:bg-teal-50">Histórico</button><button data-action="data-records-point" data-id="${p.id}" class="px-2 py-1 border rounded text-indigo-600 hover:bg-indigo-50">Dados</button><button data-action="edit-point" data-id="${p.id}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50">${validLocation ? 'Editar' : 'Corrigir localização'}</button>${p.status === 'ACTIVE' ? `<button data-action="deactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Desativar</button>` : `<button data-action="reactivate-point" data-id="${p.id}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Reativar</button>`}</div></td>
                 </tr>`;
         });
     };
 
+
+
+    const closePointRecordsModal = () => {
+        document.getElementById('point-records-modal')?.classList.add('hidden');
+        document.getElementById('point-records-modal')?.classList.remove('flex');
+        state.pointRecords.point = null;
+    };
+
+    const closeEditRecordModal = () => {
+        document.getElementById('edit-record-modal')?.classList.add('hidden');
+        document.getElementById('edit-record-modal')?.classList.remove('flex');
+        state.recordBeingEdited = null;
+        const err = document.getElementById('edit-record-error');
+        if (err) err.textContent = '';
+    };
+
+    const formatRecordDateInput = (value) => {
+        if (!value) return '';
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return '';
+        return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    };
+
+    const renderPointRecords = () => {
+        const tbody = document.getElementById('tbody-point-records');
+        const info = document.getElementById('point-records-page-info');
+        if (!tbody) return;
+        const { records, page, limit, total } = state.pointRecords;
+        if (info) info.textContent = `Página ${page} • ${records.length} de ${total} registros`;
+        if (!records.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-500">Nenhum registro encontrado.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = records.map((r) => {
+            const sourceBadge = r.record_type === 'SITE' ? 'bg-sky-100 text-sky-700' : 'bg-amber-100 text-amber-700';
+            const correctedBadge = r.corrected_at ? `<span title="Valor original: ${escapeHtml(r.original_value ?? '-')} • Data original: ${dateLabel(r.original_measured_at)} • Corrigido em: ${dateLabel(r.corrected_at)} • Node: ${escapeHtml(r.corrected_by_node_uuid || '-')}" class="ml-1 px-2 py-0.5 rounded bg-purple-100 text-purple-700 text-[11px] font-semibold">Corrigido</span>` : '';
+            const deletedBadge = r.deleted_at ? `<span class="ml-1 px-2 py-0.5 rounded bg-red-100 text-red-700 text-[11px] font-semibold">Excluído</span>` : '';
+            return `<tr class="hover:bg-slate-50">
+                <td class="p-3 whitespace-nowrap text-slate-700">${dateLabel(r.date)}</td>
+                <td class="p-3 font-mono font-semibold">${hasValue(r.value) ? Number(r.value).toFixed(3) : '-'}</td>
+                <td class="p-3">${escapeHtml(r.unit || 'm')}</td>
+                <td class="p-3"><span class="px-2 py-1 rounded ${sourceBadge} text-xs font-bold">${r.record_type}</span>${correctedBadge}${deletedBadge}</td>
+                <td class="p-3 text-slate-600">${escapeHtml(r.source_label || '-')}</td>
+                <td class="p-3 text-xs text-slate-500 whitespace-nowrap">${dateLabel(r.created_at)}</td>
+                <td class="p-3 text-xs text-slate-500 whitespace-nowrap">${dateLabel(r.updated_at)}</td>
+                <td class="p-3 text-right"><div class="inline-flex gap-2"><button data-action="edit-record" data-uuid="${r.uuid}" data-type="${r.record_type}" class="px-2 py-1 border rounded text-primary hover:bg-sky-50" ${r.deleted_at ? 'disabled title="Restaure antes de editar"' : ''}>Editar</button>${r.deleted_at ? `<button data-action="restore-record" data-uuid="${r.uuid}" data-type="${r.record_type}" class="px-2 py-1 border rounded text-green-700 hover:bg-green-50">Restaurar</button>` : `<button data-action="delete-record" data-uuid="${r.uuid}" data-type="${r.record_type}" class="px-2 py-1 border rounded text-red-600 hover:bg-red-50">Excluir</button>`}</div></td>
+            </tr>`;
+        }).join('');
+    };
+
+    const loadPointRecords = async () => {
+        const cfg = state.pointRecords;
+        if (!cfg.point) return;
+        const qs = new URLSearchParams({ source: cfg.source, page: String(cfg.page), limit: String(cfg.limit), order: cfg.order });
+        if (cfg.includeDeleted) qs.set('include_deleted', 'true');
+        const from = document.getElementById('point-records-from')?.value;
+        const to = document.getElementById('point-records-to')?.value;
+        if (from) qs.set('from', from);
+        if (to) qs.set('to', to);
+        const data = await apiFetch(`/api/data-points/${cfg.point.id}/records?${qs}`);
+        cfg.total = data.pagination?.total || 0;
+        cfg.records = data.records || [];
+        renderPointRecords();
+    };
+
+    const openPointRecordsModal = async (point) => {
+        state.pointRecords = { point, source: 'all', order: 'desc', page: 1, limit: 50, includeDeleted: false, total: 0, records: [] };
+        document.getElementById('point-records-title').textContent = `Dados do ponto: ${point.name}`;
+        document.getElementById('point-records-source').value = 'all';
+        document.getElementById('point-records-order').value = 'desc';
+        document.getElementById('point-records-include-deleted').checked = false;
+        document.getElementById('point-records-modal')?.classList.remove('hidden');
+        document.getElementById('point-records-modal')?.classList.add('flex');
+        try { await loadPointRecords(); } catch (error) { setFeedback('point-records-feedback', error.message, true); }
+    };
+
+    const openEditRecordModal = (record) => {
+        state.recordBeingEdited = record;
+        document.getElementById('edit-record-title').textContent = `Editar dado ${record.record_type}`;
+        document.getElementById('edit-record-date').value = formatRecordDateInput(record.date);
+        document.getElementById('edit-record-value').value = hasValue(record.value) ? record.value : '';
+        document.getElementById('edit-record-unit').value = record.unit || 'm';
+        document.getElementById('edit-record-reason').value = record.correction_reason || record.observation || '';
+        document.getElementById('edit-record-csv-warning').classList.toggle('hidden', record.record_type !== 'CSV');
+        document.getElementById('edit-record-modal')?.classList.remove('hidden');
+        document.getElementById('edit-record-modal')?.classList.add('flex');
+    };
 
     const trendLabel = (trend) => ({ RISING: 'Subindo', FALLING: 'Baixando', STABLE: 'Estável', UNKNOWN: 'Desconhecida' }[trend] || trend || '-');
     const formatMetric = (value, suffix = '') => hasValue(value) ? `${Number(value).toFixed(2)}${suffix}` : '-';
@@ -495,9 +584,59 @@ document.addEventListener('DOMContentLoaded', () => {
         const point = state.pontos.find((p) => String(p.id) === String(btn.dataset.id));
         if (!point) return;
         if (btn.dataset.action === 'historical-point') openHistoricalModal(point);
+        if (btn.dataset.action === 'data-records-point') openPointRecordsModal(point);
         if (btn.dataset.action === 'edit-point') openEditPointModal(point);
         if (btn.dataset.action === 'deactivate-point') openConfirmPointModal(point, 'deactivate');
         if (btn.dataset.action === 'reactivate-point') openConfirmPointModal(point, 'reactivate');
+    });
+
+
+    document.getElementById('close-point-records-modal')?.addEventListener('click', closePointRecordsModal);
+    document.getElementById('point-records-source')?.addEventListener('change', async (e) => { state.pointRecords.source = e.target.value; state.pointRecords.page = 1; await loadPointRecords().catch((error) => setFeedback('point-records-feedback', error.message, true)); });
+    document.getElementById('point-records-order')?.addEventListener('change', async (e) => { state.pointRecords.order = e.target.value; await loadPointRecords().catch((error) => setFeedback('point-records-feedback', error.message, true)); });
+    document.getElementById('point-records-include-deleted')?.addEventListener('change', async (e) => { state.pointRecords.includeDeleted = e.target.checked; state.pointRecords.page = 1; await loadPointRecords().catch((error) => setFeedback('point-records-feedback', error.message, true)); });
+    document.getElementById('apply-point-records-filters')?.addEventListener('click', async () => { state.pointRecords.page = 1; await loadPointRecords().catch((error) => setFeedback('point-records-feedback', error.message, true)); });
+    document.getElementById('point-records-prev')?.addEventListener('click', async () => { if (state.pointRecords.page > 1) { state.pointRecords.page -= 1; await loadPointRecords(); } });
+    document.getElementById('point-records-next')?.addEventListener('click', async () => { if (state.pointRecords.page * state.pointRecords.limit < state.pointRecords.total) { state.pointRecords.page += 1; await loadPointRecords(); } });
+    document.getElementById('tbody-point-records')?.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn || !state.pointRecords.point) return;
+        const record = state.pointRecords.records.find((item) => item.uuid === btn.dataset.uuid && item.record_type === btn.dataset.type);
+        if (!record) return;
+        const sourcePath = record.record_type === 'SITE' ? 'site' : 'csv';
+        if (btn.dataset.action === 'edit-record') return openEditRecordModal(record);
+        if (btn.dataset.action === 'delete-record') {
+            if (!confirm('Tem certeza que deseja excluir este registro? A exclusão será replicada para as outras máquinas.')) return;
+            await apiFetch(`/api/data-points/${state.pointRecords.point.id}/records/${sourcePath}/${record.uuid}`, { method: 'DELETE' });
+        }
+        if (btn.dataset.action === 'restore-record') {
+            await apiFetch(`/api/data-points/${state.pointRecords.point.id}/records/${sourcePath}/${record.uuid}/restore`, { method: 'POST' });
+        }
+        setFeedback('point-records-feedback', 'Registro atualizado. O gráfico foi marcado como desatualizado.');
+        await loadPointRecords();
+    });
+    document.getElementById('close-edit-record-modal')?.addEventListener('click', closeEditRecordModal);
+    document.getElementById('cancel-edit-record-modal')?.addEventListener('click', closeEditRecordModal);
+    document.getElementById('edit-record-form')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const record = state.recordBeingEdited;
+        const point = state.pointRecords.point;
+        if (!record || !point) return;
+        const payload = {
+            measured_at: document.getElementById('edit-record-date').value,
+            value: Number(document.getElementById('edit-record-value').value),
+            unit: document.getElementById('edit-record-unit').value.trim() || 'm',
+            observation: document.getElementById('edit-record-reason').value.trim(),
+            correction_reason: document.getElementById('edit-record-reason').value.trim()
+        };
+        const err = document.getElementById('edit-record-error');
+        try {
+            const sourcePath = record.record_type === 'SITE' ? 'site' : 'csv';
+            await apiFetch(`/api/data-points/${point.id}/records/${sourcePath}/${record.uuid}`, { method: 'PUT', body: JSON.stringify(payload) });
+            closeEditRecordModal();
+            setFeedback('point-records-feedback', 'Registro salvo. Os dados foram alterados. Atualize o gráfico.');
+            await loadPointRecords();
+        } catch (error) { if (err) err.textContent = error.message; }
     });
 
     document.getElementById('close-edit-point-modal')?.addEventListener('click', closeEditPointModal);

@@ -87,7 +87,7 @@ app.use('/api/processing', processingRoutes);
 app.use((error, req, res, next) => {
   console.error('[server] erro não tratado:', error);
   if (res.headersSent) return next(error);
-  return res.status(500).json({ ok: false, error: 'Erro interno do servidor.' });
+  return res.status(error.status || 500).json({ ok: false, message: error.message || 'Erro interno do servidor.', error: error.status ? undefined : 'Erro interno do servidor.' });
 });
 
 const start = async () => {
