@@ -13,7 +13,9 @@
     "sync:merge-data-points": "node scripts/sync-merge-data-points.js",
     "chart-cache:cleanup": "node scripts/chart-cache-cleanup.js",
     "chart-cache:diagnose": "node scripts/chart-cache-diagnose.js",
-    "chart-cache:cleanup-dev": "node scripts/chart-cache-cleanup-dev.js"
+    "chart-cache:cleanup-dev": "node scripts/chart-cache-cleanup-dev.js",
+    "db:counts": "node scripts/db-counts.js",
+    "clear:all": "node scripts/clear-all.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

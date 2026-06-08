@@ -44,16 +44,19 @@ const getNodeSyncTarget = (node) => {
   return baseUrl ? `${baseUrl}/api/sync/apply` : null;
 };
 
+const isSelfNode = (node, self = null) => Boolean(self && node && (
+  (node.node_uuid && self.node_uuid && node.node_uuid === self.node_uuid) ||
+  (node.tailscale_ip && self.tailscale_ip && node.tailscale_ip === self.tailscale_ip)
+));
+
 const resolveNodeBaseUrl = (node, self = null) => {
   let baseUrl = getNodeBaseUrl(node);
-  const selfUrls = getSelfBaseUrls(self).map(stripApiPath).filter(Boolean);
-  const normalizedBaseUrl = stripApiPath(baseUrl);
-  const matchedSelfUrl = normalizedBaseUrl && selfUrls.includes(normalizedBaseUrl);
+  const matchedSelfUrl = isSelfNode(node, self);
   if (matchedSelfUrl) {
     const fallback = getTailscaleBaseUrl(node, node?.port || 3000);
-    if (fallback && stripApiPath(fallback) !== normalizedBaseUrl) baseUrl = fallback;
+    if (fallback && stripApiPath(fallback) !== stripApiPath(baseUrl)) baseUrl = fallback;
   }
-  return { baseUrl, targetUrl: baseUrl ? `${baseUrl}/api/sync/apply` : null, matchedSelfUrl };
+  return { baseUrl, targetUrl: baseUrl ? `${baseUrl}/api/sync/apply` : null, matchedSelfUrl, isSelf: matchedSelfUrl };
 };
 
-module.exports = { normalizeUrl, getNodeBaseUrl, getSyncTargetUrl, getSelfBaseUrls, getNodeSyncTarget, resolveNodeBaseUrl, getTailscaleBaseUrl };
+module.exports = { normalizeUrl, getNodeBaseUrl, getSyncTargetUrl, getSelfBaseUrls, getNodeSyncTarget, resolveNodeBaseUrl, getTailscaleBaseUrl, isSelfNode };

@@ -53,5 +53,8 @@ module.exports = {
   syncMaxPayloadBytes: parsePositiveInteger(process.env.SYNC_MAX_PAYLOAD_BYTES, 512000),
   syncMaxBatchesPerCycle: parsePositiveInteger(process.env.SYNC_MAX_BATCHES_PER_CYCLE, 5),
   syncDedupeWindowMs: parsePositiveInteger(process.env.SYNC_DEDUPE_WINDOW_MS, 2000),
-  chartJobTimeoutSeconds: parsePositiveInteger(process.env.CHART_JOB_TIMEOUT_SECONDS, 60)
+  chartJobTimeoutSeconds: parsePositiveInteger(process.env.CHART_JOB_TIMEOUT_SECONDS, 60),
+  autoBootstrapOnJoin: parseBoolean(process.env.AUTO_BOOTSTRAP_ON_JOIN, false),
+  autoJoinHostOnStartup: parseBoolean(process.env.AUTO_JOIN_HOST_ON_STARTUP, false),
+  autoJoinHostUrl: (process.env.AUTO_JOIN_HOST_URL || '').trim()
 };

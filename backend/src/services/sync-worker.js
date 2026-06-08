@@ -35,6 +35,7 @@ const runCycle = async () => {
       try {
         if (!base_url) throw new Error('URL de destino não configurada');
         if (resolved.matchedSelfUrl) logger.warn(`[sync] AVISO: destino calculado para ${node.node_name} parece ser o próprio servidor; usando fallback: ${base_url}`);
+        logger.debug(`[sync-target] self=${self?.node_name || '-'}/${self?.tailscale_ip || '-'} remote=${node.node_name}/${node.tailscale_ip || '-'} isSelf=${resolved.isSelf ? 'true' : 'false'} target=${base_url}`);
         logger.debug(`[sync] node remoto ${node.node_name}: public_url=${node.public_url || '-'} tailscale_ip=${node.tailscale_ip || '-'} port=${node.port || 3000} target=${target_url}`);
         logger.debug(`[sync] target ${node.node_name} = ${target_url}`);
         if (!(await canRetryNode(node))) {

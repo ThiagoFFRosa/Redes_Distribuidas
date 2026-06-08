@@ -9,6 +9,7 @@ const { getNodeSyncTarget } = require('../utils/sync-targets');
 const syncCoordinator = require('../services/sync-coordinator.service');
 const ngrokCoordinator = require('../services/ngrok-coordinator.service');
 const { detectTailscaleIp } = require('../utils/network-addresses');
+const clearAllLock = require('../services/clear-all-lock.service');
 
 const router = express.Router();
 const ROLES = ['HOST', 'STANDBY', 'UNKNOWN'];
@@ -496,6 +497,11 @@ router.post('/request-join-host', async (req, res) => {
       if (data.status === 'APPROVED' && data.handshake_key === handshakeKey) {
         const nodesToSave = [data.accepted_by, ...(data.known_nodes || [])].filter(Boolean);
         await saveRemoteNodeList(nodesToSave);
+        const lock = await clearAllLock.getLock();
+        if (lock.exists || !env.autoBootstrapOnJoin) {
+          logger.info(`[request-join-host] bootstrap automático bloqueado auto=${env.autoBootstrapOnJoin} clear_all_lock=${lock.exists}`);
+          return res.json({ ...data, message: 'Máquinas vinculadas nos dois lados. Bootstrap automático bloqueado; use o painel para iniciar sincronização inicial.', bootstrap: { ok: true, skipped: true, reason: lock.exists ? 'clear_all_lock' : 'AUTO_BOOTSTRAP_ON_JOIN=false' } });
+        }
         const bootstrapRun = await syncCoordinator.startFullBootstrap({ host_url: normalizedHostUrl }).catch((error) => ({ ok: false, error: error.message }));
         return res.json({ ...data, message: 'Máquinas vinculadas nos dois lados.', bootstrap: bootstrapRun });
       }
@@ -510,6 +516,11 @@ router.post('/request-join-host', async (req, res) => {
     if (data.accepted_by || data.already_registered || data.status === 'APPROVED') {
       const nodesToSave = [data.accepted_by, ...(data.known_nodes || [])].filter(Boolean);
       if (nodesToSave.length) await saveRemoteNodeList(nodesToSave);
+      const lock = await clearAllLock.getLock();
+      if (lock.exists || !env.autoBootstrapOnJoin) {
+        logger.info(`[request-join-host] bootstrap automático bloqueado auto=${env.autoBootstrapOnJoin} clear_all_lock=${lock.exists}`);
+        return res.json({ ...data, bootstrap: { ok: true, skipped: true, reason: lock.exists ? 'clear_all_lock' : 'AUTO_BOOTSTRAP_ON_JOIN=false' } });
+      }
       const bootstrapRun = await syncCoordinator.startFullBootstrap({ host_url: normalizedHostUrl });
       return res.json({ ...data, bootstrap: bootstrapRun });
     }

@@ -145,7 +145,12 @@ class NgrokCoordinatorService {
         if (age > Number(env.ngrokTakeoverGraceMs || 10000)) winner = null;
       }
       if (!winner) winner = await this.electWinner();
-      logger.info(`[ngrok-election] winner=${winner?.node_name || '-'} reason=${winner?.role === 'HOST' ? 'HOST_PRIORITY' : 'POWER_SCORE'}`);
+      if (!winner) {
+        logger.info('[ngrok-election] nenhum candidato elegível; aguardando próximo ciclo');
+        lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: null, owner_node_name: null, public_url: null, last_checked_at: new Date().toISOString(), reason: offlineReason };
+        return lastStatus;
+      }
+      logger.info(`[ngrok-election] winner=${winner.node_name} reason=${winner.role === 'HOST' ? 'HOST_PRIORITY' : 'POWER_SCORE'}`);
       if (winner?.node_uuid && self?.node_uuid && winner.node_uuid === self.node_uuid) {
         if (self.role === 'HOST') {
           const url = await ngrokService.startTunnelWithRetry(env.port);

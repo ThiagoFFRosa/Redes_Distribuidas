@@ -1139,6 +1139,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+
+    document.getElementById('bootstrap-initial-btn')?.addEventListener('click', async (event) => {
+        const btn = event.currentTarget;
+        const remote = state.servidores.find((node) => !node.is_self && (node.public_url || node.tailscale_ip));
+        if (!remote) {
+            setFeedback('join-requests-feedback', 'Nenhum nó remoto encontrado para bootstrap inicial.', true);
+            return;
+        }
+        const hostUrl = remote.public_url || `http://${remote.tailscale_ip}:${remote.port || 3000}`;
+        if (!window.confirm(`Iniciar sincronização inicial recebendo dados de ${remote.node_name || hostUrl}?`)) return;
+        btn.disabled = true;
+        btn.textContent = 'Iniciando bootstrap...';
+        try {
+            const data = await apiFetch('/api/sync/full-bootstrap', { method: 'POST', body: JSON.stringify({ host_url: hostUrl }) });
+            setFeedback('join-requests-feedback', data.message || `Bootstrap inicial iniciado a partir de ${hostUrl}.`, false);
+        } catch (error) {
+            setFeedback('join-requests-feedback', `Erro ao iniciar bootstrap: ${error.message}`, true);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Iniciar sincronização inicial';
+        }
+    });
+
     document.getElementById('sync-now-btn')?.addEventListener('click', async (event) => {
         const btn = event.currentTarget;
         btn.disabled = true;
