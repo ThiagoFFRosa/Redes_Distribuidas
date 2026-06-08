@@ -178,6 +178,7 @@ const getChartCachePayloadById = async (id, connection = pool) => {
     date_start: dateOnly(row.date_start),
     date_end: dateOnly(row.date_end),
     payload: reduceChartPayload(parseJson(row.payload_json) || parseJson(row.payload)),
+    payload_hash: row.payload_hash,
     summary: parseJson(row.summary_json) || parseJson(row.summary),
     seasonal_analysis: parseJson(row.seasonal_analysis_json),
     forecast: parseJson(row.forecast_json),

@@ -19,7 +19,8 @@ const migrations = [
   require('./migrations/016_cluster_runtime_ngrok_diagnostics'),
   require('./migrations/017_point_records_audit_soft_delete'),
   require('./migrations/018_chart_cache_analytics_payloads'),
-  require('./migrations/019_optimize_chart_cache_indexes')
+  require('./migrations/019_optimize_chart_cache_indexes'),
+  require('./migrations/020_chart_cache_payload_hash')
 ];
 
 const ensureMigrationsTable = async (connection) => {

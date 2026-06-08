@@ -135,7 +135,7 @@ const getLatestActiveJob = async (dataPointUuid) => {
        FROM chart_generation_jobs cj
        LEFT JOIN cluster_nodes cn ON cn.node_uuid = cj.assigned_to_node_uuid
       WHERE cj.data_point_uuid = ? AND cj.chart_type = ? AND cj.status IN ('PENDING', 'PROCESSING')
-      ORDER BY FIELD(cj.status, 'PROCESSING', 'PENDING'), cj.created_at DESC
+      ORDER BY FIELD(cj.status, 'PROCESSING', 'PENDING'), cj.created_at DESC, cj.id DESC
       LIMIT 1`,
     [dataPointUuid, CHART_TYPE]
   );
@@ -148,7 +148,7 @@ const getLatestJob = async (dataPointUuid) => {
        FROM chart_generation_jobs cj
        LEFT JOIN cluster_nodes cn ON cn.node_uuid = cj.assigned_to_node_uuid
       WHERE cj.data_point_uuid = ? AND cj.chart_type = ?
-      ORDER BY cj.created_at DESC
+      ORDER BY cj.created_at DESC, cj.id DESC
       LIMIT 1`,
     [dataPointUuid, CHART_TYPE]
   );
@@ -164,6 +164,7 @@ const getLatestChartCache = async (dataPointUuid, chartType = CHART_TYPE, connec
       `SELECT id
          FROM chart_cache
         WHERE data_point_uuid = ? AND chart_type = ?
+        ORDER BY generated_at DESC, id DESC
         LIMIT 1`,
       [dataPointUuid, chartType]
     );
@@ -173,7 +174,7 @@ const getLatestChartCache = async (dataPointUuid, chartType = CHART_TYPE, connec
       `SELECT id, uuid, data_point_id, data_point_uuid, chart_type, status, source_job_uuid,
               generated_by_node_id, generated_by_node_uuid, generated_by_node_name,
               total_points, date_start, date_end,
-              payload, payload_json, summary, summary_json, seasonal_analysis_json, forecast_json,
+              payload, payload_json, payload_hash, summary, summary_json, seasonal_analysis_json, forecast_json,
               error_message, generated_at, created_at, updated_at
          FROM chart_cache
         WHERE id = ?
@@ -198,7 +199,7 @@ const findReusableJob = async (dataPointUuid) => {
       WHERE cj.data_point_uuid = ? AND cj.chart_type = ?
         AND cj.created_at >= DATE_SUB(NOW(), INTERVAL ${ACTIVE_JOB_REUSE_MINUTES} MINUTE)
         AND (cj.status IN ('PENDING', 'PROCESSING') OR (cj.status = 'DONE' AND cc.id IS NULL))
-      ORDER BY FIELD(cj.status, 'PROCESSING', 'PENDING', 'DONE'), cj.created_at DESC
+      ORDER BY FIELD(cj.status, 'PROCESSING', 'PENDING', 'DONE'), cj.created_at DESC, cj.id DESC
       LIMIT 1`,
     [dataPointUuid, CHART_TYPE]
   );
@@ -256,6 +257,61 @@ const normalizeJob = (job) => job && ({
   error_message: job.error_message,
   finished_at: job.finished_at
 });
+
+const buildChartPayloadHash = ({ payload, summary, seasonalAnalysis, forecast }) => crypto
+  .createHash('sha256')
+  .update(JSON.stringify({ payload, summary, seasonalAnalysis, forecast }))
+  .digest('hex');
+
+const upsertChartCache = async ({
+  connection,
+  dataPointId,
+  dataPointUuid,
+  chartType = CHART_TYPE,
+  sourceJobUuid,
+  generatedByNodeId,
+  generatedByNodeUuid,
+  generatedByNodeName,
+  totalPoints,
+  dateStart,
+  dateEnd,
+  payload,
+  summary,
+  seasonalAnalysis,
+  forecast
+}) => {
+  if (!dataPointUuid) throw new Error('chart_cache sem data_point_uuid');
+  if (!chartType) throw new Error('chart_cache sem chart_type');
+
+  const existing = await getLatestChartCache(dataPointUuid, chartType, connection);
+  const cacheUuid = existing?.uuid || crypto.randomUUID();
+  const payloadJson = JSON.stringify(payload || {});
+  const summaryJson = JSON.stringify(summary || {});
+  const seasonalAnalysisJson = seasonalAnalysis == null ? null : JSON.stringify(seasonalAnalysis);
+  const forecastJson = forecast == null ? null : JSON.stringify(forecast);
+  const payloadHash = buildChartPayloadHash({ payload, summary, seasonalAnalysis, forecast });
+
+  console.log(`[chart-worker] salvando chart_cache uuid=${cacheUuid} data_point_uuid=${dataPointUuid} payload_hash=${payloadHash}`);
+  await connection.execute(
+    `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid,
+      generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, summary_json, seasonal_analysis_json, forecast_json, payload_json, payload_hash, error_message, generated_at)
+     VALUES (?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NOW())
+     ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), data_point_id=VALUES(data_point_id), data_point_uuid=VALUES(data_point_uuid), chart_type=VALUES(chart_type),
+       status='READY', generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid),
+       generated_by_node_name=VALUES(generated_by_node_name), source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start),
+       date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), summary_json=VALUES(summary_json), seasonal_analysis_json=VALUES(seasonal_analysis_json),
+       forecast_json=VALUES(forecast_json), payload_json=VALUES(payload_json), payload_hash=VALUES(payload_hash), error_message=NULL, generated_at=NOW(), updated_at=NOW()`,
+    [cacheUuid, dataPointId, dataPointUuid, chartType, generatedByNodeId || null, generatedByNodeUuid || null, generatedByNodeName || null, sourceJobUuid || null,
+      Number(totalPoints || 0), dateStart || null, dateEnd || null, payloadJson, summaryJson, summaryJson, seasonalAnalysisJson, forecastJson, payloadJson, payloadHash]
+  );
+
+  const saved = await getLatestChartCache(dataPointUuid, chartType, connection);
+  if (!saved?.uuid) throw new Error('chart_cache não foi salvo com uuid válido');
+  if (saved.data_point_uuid !== dataPointUuid) {
+    throw new Error(`chart_cache salvo com data_point_uuid divergente (${saved.data_point_uuid || '-'} != ${dataPointUuid})`);
+  }
+  return saved;
+};
 
 const chooseAssignee = async () => {
   const selection = await selectBestProcessingNode();
@@ -319,36 +375,27 @@ const getHistoricalChart = async (dataPointId) => {
     throw error;
   }
   let chart = normalizeChart(cacheRow);
-  const [mismatchCacheRows] = chart ? [[]] : await pool.execute(
+  const [mismatchCacheRows] = await pool.execute(
     `SELECT uuid, data_point_uuid, source_job_uuid, chart_type, generated_at
        FROM chart_cache
-      WHERE data_point_id = ? AND chart_type = ? AND data_point_uuid <> ?
-      ORDER BY generated_at DESC, id DESC
-      LIMIT 1`,
+      WHERE data_point_id = ? AND chart_type = ? AND COALESCE(data_point_uuid, '') <> ?
+      ORDER BY generated_at DESC, id DESC`,
     [dataPoint.id, CHART_TYPE, dataPoint.uuid]
   );
-  const mismatchCache = mismatchCacheRows?.[0] || null;
   const chartPoints = Number(chart?.points_count || chart?.payload?.datasets?.[0]?.data?.length || 0);
-  console.log(`[historical-chart] cache encontrado=${Boolean(chart)}${chart ? ` cache_uuid=${chart.uuid || '-'} points=${chartPoints}` : ` para data_point_uuid=${dataPoint.uuid}`}`);
+  console.log(`[historical-chart] cache válido encontrado=${Boolean(chart)}${chart ? ` cache_uuid=${chart.uuid || '-'} data_point_uuid=${chart.data_point_uuid || '-'} points=${chartPoints}` : ` para data_point_uuid=${dataPoint.uuid}`}`);
+  if (!chart) console.log(`[historical-chart] nenhum cache válido encontrado para data_point_uuid=${dataPoint.uuid}`);
+  if (mismatchCacheRows.length) {
+    for (const mismatchCache of mismatchCacheRows) {
+      console.warn(`[historical-chart] cache divergente ignorado cache_uuid=${mismatchCache.uuid || '-'} cache_data_point_uuid=${mismatchCache.data_point_uuid || '-'} expected=${dataPoint.uuid}`);
+    }
+    console.warn(`[historical-chart] caches divergentes ignorados=${mismatchCacheRows.length}`);
+  }
 
   const latestJobForResponse = await getLatestJob(dataPoint.uuid);
   const selfNode = await clusterNodeRepository.getSelfNode();
   if (latestJobForResponse) {
     console.log(`[historical-chart] job status=${normalizeStatus(latestJobForResponse.status)} assigned_to=${latestJobForResponse.assigned_to_node_name || latestJobForResponse.assigned_node_name || latestJobForResponse.assigned_to_node_uuid || '-'} self=${selfNode?.node_name || selfNode?.node_uuid || '-'}`);
-  }
-
-  if (mismatchCache) {
-    const message = `Cache de gráfico encontrado para o mesmo ponto local, mas com data_point_uuid divergente (${mismatchCache.data_point_uuid} != ${dataPoint.uuid}). Rode npm run sync:diagnose-duplicates e corrija com sync:merge-data-points em ambiente dev.`;
-    console.error(`[historical-chart] UUID_MISMATCH point_id=${dataPoint.id} data_point_uuid=${dataPoint.uuid} cache_uuid=${mismatchCache.uuid} cache_data_point_uuid=${mismatchCache.data_point_uuid}`);
-    return {
-      ok: true,
-      status: 'UUID_MISMATCH',
-      data_point: dataPoint,
-      chart: null,
-      cache: { available: false, ...mismatchCache },
-      job: normalizeJob(latestJobForResponse),
-      message
-    };
   }
 
   if (chart?.status === 'READY') {
@@ -408,6 +455,7 @@ const getHistoricalChart = async (dataPointId) => {
   const latestJob = job || latestJobForResponse;
 
   if (!job && !latestJob && !chart) {
+    console.log('[historical-chart] criando job novo');
     const queued = await createOrReuseJob(dataPoint, null, { silent: true });
     job = queued.job;
   } else if (!job) {
@@ -540,24 +588,28 @@ const generateChartForJob = async (job, selfNode) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const [cacheResult] = await connection.execute(
-      `INSERT INTO chart_cache (uuid, data_point_id, data_point_uuid, chart_type, status, generated_by_node_id, generated_by_node_uuid,
-        generated_by_node_name, source_job_uuid, total_points, date_start, date_end, payload, summary, summary_json, seasonal_analysis_json, forecast_json, payload_json, generated_at)
-       VALUES (?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-       ON DUPLICATE KEY UPDATE status='READY', generated_by_node_id=VALUES(generated_by_node_id), generated_by_node_uuid=VALUES(generated_by_node_uuid),
-         generated_by_node_name=VALUES(generated_by_node_name), source_job_uuid=VALUES(source_job_uuid), total_points=VALUES(total_points), date_start=VALUES(date_start),
-         date_end=VALUES(date_end), payload=VALUES(payload), summary=VALUES(summary), summary_json=VALUES(summary_json), seasonal_analysis_json=VALUES(seasonal_analysis_json), forecast_json=VALUES(forecast_json), payload_json=VALUES(payload_json), error_message=NULL, generated_at=NOW()`,
-      [crypto.randomUUID(), dataPointId, dataPointUuid, CHART_TYPE, selfNode?.id || null, selfUuid, selfName, job.uuid, total, summary.date_start, summary.date_end, JSON.stringify(payload), JSON.stringify(summary), JSON.stringify(summary), JSON.stringify(seasonalAnalysis), JSON.stringify(forecast), JSON.stringify(payload)]
-    );
-    if (cacheResult.insertId) {
-      cacheId = cacheResult.insertId;
-    }
-    const [[cacheRow]] = await connection.execute('SELECT id, uuid, source_job_uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? LIMIT 1', [dataPointUuid, CHART_TYPE]);
-    cacheId = cacheId || cacheRow?.id || null;
-    cacheUuid = cacheRow?.uuid || null;
-    if (!cacheId || !cacheUuid) throw new Error('chart_cache não foi salvo com uuid válido');
-    await connection.execute("UPDATE chart_generation_jobs SET status='DONE', progress_percent=100, finished_at=NOW(), error_message=NULL WHERE id=?", [job.id]);
+    const savedCache = await upsertChartCache({
+      connection,
+      dataPointId,
+      dataPointUuid,
+      chartType: CHART_TYPE,
+      sourceJobUuid: job.uuid,
+      generatedByNodeId: selfNode?.id || null,
+      generatedByNodeUuid: selfUuid,
+      generatedByNodeName: selfName,
+      totalPoints: total,
+      dateStart: summary.date_start,
+      dateEnd: summary.date_end,
+      payload,
+      summary,
+      seasonalAnalysis,
+      forecast
+    });
+    cacheId = savedCache.id;
+    cacheUuid = savedCache.uuid;
+    console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid} data_point_uuid=${savedCache.data_point_uuid} points=${total}`);
     await createCacheSyncEvent(cacheId, connection);
+    await connection.execute("UPDATE chart_generation_jobs SET status='DONE', progress_percent=100, finished_at=NOW(), error_message=NULL WHERE id=?", [job.id]);
     await createJobSyncEvent(job.id, connection);
     await connection.commit();
   } catch (error) {
