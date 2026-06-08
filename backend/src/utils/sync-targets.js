@@ -18,9 +18,9 @@ const getTailscaleBaseUrl = (node, defaultPort = 3000) => {
 };
 
 const getNodeBaseUrl = (node) => {
-  const publicUrl = normalizeUrl(node?.public_url);
-  if (publicUrl) return publicUrl;
-  return getTailscaleBaseUrl(node, 3000);
+  const tailscaleUrl = getTailscaleBaseUrl(node, node?.port || 3000);
+  if (tailscaleUrl) return tailscaleUrl;
+  return normalizeUrl(node?.public_url);
 };
 
 const getSelfBaseUrls = (self) => {

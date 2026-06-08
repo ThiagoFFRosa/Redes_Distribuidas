@@ -237,15 +237,25 @@
                         <button id="refresh-health-btn" class="bg-primary hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 whitespace-nowrap"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Atualizar Status</button>
                         </div>
                     </div>
+                    <div id="ngrok-status-card" class="m-5 p-4 rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-600">
+                        <div class="font-bold text-dark mb-2">Ngrok</div>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div>Status: <span id="ngrok-status-value" class="font-semibold">-</span></div>
+                            <div>Dono: <span id="ngrok-owner-value" class="font-semibold">-</span></div>
+                            <div class="md:col-span-1 break-all">URL: <span id="ngrok-url-value" class="font-mono">-</span></div>
+                            <div>Última verificação: <span id="ngrok-last-check-value">-</span></div>
+                        </div>
+                    </div>
                     <div class="overflow-x-auto w-full">
-                        <table class="w-full text-left border-collapse min-w-[1100px]">
+                        <table class="w-full text-left border-collapse min-w-[1200px]">
                             <thead>
                                 <tr class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider border-b border-slate-200">
                                     <th class="p-4 font-medium">Nome do Servidor</th>
                                     <th class="p-4 font-medium">IP (Tailscale)</th>
                                     <th class="p-4 font-medium">Função</th>
                                     <th class="p-4 font-medium">Status</th>
-                                    <th class="p-4 font-medium">Public URL</th>
+                                    <th class="p-4 font-medium">URL local/Tailscale</th>
+                                    <th class="p-4 font-medium">URL pública/ngrok</th>
                                     <th class="p-4 font-medium">Porta</th>
                                     <th class="p-4 font-medium">Sync target</th>
                                     <th class="p-4 font-medium">Pendentes</th>

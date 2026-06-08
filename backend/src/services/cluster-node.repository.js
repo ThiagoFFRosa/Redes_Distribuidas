@@ -294,14 +294,17 @@ class ClusterNodeRepository {
     const node = nodeUuid ? await this.findByNodeUuid(nodeUuid) : null;
     let updated = null;
     if (node) {
+      const shouldClearPublicUrl = status !== 'ONLINE' && /ngrok/i.test(String(node.public_url || ''));
       updated = await this.updateNodeStructuralData(node.id, {
-        public_url: publicUrl || node.public_url || null,
+        public_url: status === 'ONLINE' ? (publicUrl || node.public_url || null) : (shouldClearPublicUrl ? null : node.public_url),
         ngrok_enabled_currently: status === 'ONLINE' ? 1 : 0,
         ngrok_status: status,
         ngrok_last_seen_at: status === 'ONLINE' ? now : node.ngrok_last_seen_at
       }, options);
     }
     await this.setRuntimeState('ngrok_owner_node_uuid', status === 'ONLINE' ? (nodeUuid || '') : '');
+    await this.setRuntimeState('ngrok_owner_node_name', status === 'ONLINE' ? (updated?.node_name || node?.node_name || '') : '');
+    await this.setRuntimeState('ngrok_public_url', status === 'ONLINE' ? (publicUrl || updated?.public_url || '') : '');
     await this.setRuntimeState('ngrok_status', status);
     await this.setRuntimeState('ngrok_last_check_at', now.toISOString());
     return updated;
