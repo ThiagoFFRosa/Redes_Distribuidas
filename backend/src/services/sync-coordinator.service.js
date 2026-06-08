@@ -7,6 +7,7 @@ const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
 const logger = require('../utils/logger');
 const { normalizeUrl, getNodeBaseUrl, resolveNodeBaseUrl, getNodeSyncTarget } = require('../utils/sync-targets');
 const payloadService = require('./sync-payload.service');
+const clearAllLock = require('./clear-all-lock.service');
 
 const normalizeBaseUrl = getNodeBaseUrl;
 
@@ -266,6 +267,7 @@ const pushToNode = async ({ node_uuid, base_url, limit = env.syncBatchSize, maxB
   const batchLimit = Math.max(1, Number(maxBatches) || env.syncMaxBatchesPerCycle);
   const destination = resolved.targetUrl;
   let pendingCount = await countPendingEventsForNode(remoteUuid);
+  logger.debug(`[sync-target] self=${self?.node_name || '-'}/${self?.tailscale_ip || '-'} remote=${nodeName}/${node?.tailscale_ip || '-'} isSelf=${resolved.isSelf ? 'true' : 'false'} target=${baseUrl}`);
   logger.debug(`[sync] node remoto ${nodeName}: public_url=${node?.public_url || '-'} tailscale_ip=${node?.tailscale_ip || '-'} port=${node?.port || 3000} target=${destination}`);
   logger.debug(`[sync] target ${nodeName} = ${destination}`);
   if (resolved.matchedSelfUrl) logger.warn(`[sync] AVISO: destino calculado para ${nodeName} parece ser o próprio servidor; usando fallback: ${baseUrl}`);
@@ -349,17 +351,19 @@ const payloadGetterForTable = {
   chart_cache: payloadService.getChartCachePayloadById
 };
 
-const getBootstrapManifest = async () => {
+const getBootstrapManifest = async ({ requester_name = '-', requester_ip = '-' } = {}) => {
+  const self = await repo.getSelfNode().catch(() => null);
   const counts = {};
   for (const table of BOOTSTRAP_ENTITIES) {
     const [[row]] = await pool.execute(`SELECT COUNT(*) AS total FROM ${table}`);
     counts[table] = Number(row?.total || 0);
   }
   const serverTime = nowMysql();
-  return { ok: true, counts, generated_at: new Date().toISOString(), server_time: serverTime };
+  logger.info(`[bootstrap-server] manifest local=${self?.node_name || env.serverName} requester=${requester_name || '-'} historical_imports=${counts.historical_imports || 0} historical_measurements=${counts.historical_measurements || 0} data_points=${counts.data_points || 0}`);
+  return { ok: true, counts, generated_at: new Date().toISOString(), server_time: serverTime, exporter: { node_uuid: self?.node_uuid || null, node_name: self?.node_name || env.serverName, tailscale_ip: self?.tailscale_ip || null }, requester: { node_name: requester_name || null, ip: requester_ip || null } };
 };
 
-const exportBootstrapEntity = async ({ entity_type, offset = 0, limit = 500 } = {}) => {
+const exportBootstrapEntity = async ({ entity_type, offset = 0, limit = 500, requester_name = '-', requester_ip = '-' } = {}) => {
   const table = String(entity_type || '');
   if (!BOOTSTRAP_ENTITIES.includes(table)) {
     const error = new Error('entity_type inválido para bootstrap/export');
@@ -368,6 +372,10 @@ const exportBootstrapEntity = async ({ entity_type, offset = 0, limit = 500 } = 
   }
   const safeLimit = Math.min(Math.max(Number(limit) || 500, 1), 1000);
   const safeOffset = Math.max(Number(offset) || 0, 0);
+  const [[totalRow]] = await pool.execute(`SELECT COUNT(*) AS total FROM ${table}`);
+  const total = Number(totalRow?.total || 0);
+  const self = await repo.getSelfNode().catch(() => null);
+  logger.info(`[bootstrap-server] local=${self?.node_name || env.serverName} exporting_to=${requester_name || '-'} requester_ip=${requester_ip || '-'} entity=${table} offset=${safeOffset} limit=${safeLimit} total=${total}`);
   const [rows] = await pool.execute(`SELECT id FROM ${table} ORDER BY id ASC LIMIT ${safeLimit} OFFSET ${safeOffset}`);
   const getter = payloadGetterForTable[table];
   const items = [];
@@ -408,8 +416,12 @@ const applyBootstrapItems = async (table, items, sourceNodeUuid) => {
 const runFullBootstrap = async (runId, hostUrl) => {
   let processed = 0;
   try {
-    logger.info(`[bootstrap] iniciado host=${hostUrl}`);
-    const manifest = await requestJson(`${hostUrl}/api/sync/bootstrap/manifest`);
+    const local = await repo.getSelfNode().catch(() => null);
+    logger.info(`[bootstrap-client] local=${local?.node_name || env.serverName} iniciado host=${hostUrl}`);
+    const requester = `requester_name=${encodeURIComponent(local?.node_name || env.serverName)}&requester_ip=${encodeURIComponent(local?.tailscale_ip || '')}`;
+    const manifest = await requestJson(`${hostUrl}/api/sync/bootstrap/manifest?${requester}`);
+    const exporter = manifest.exporter || {};
+    logger.info(`[bootstrap-client] local=${local?.node_name || env.serverName} receiving_from=${exporter.node_name || '-'} host_url=${hostUrl} manifest historical_imports=${manifest.counts?.historical_imports || 0} historical_measurements=${manifest.counts?.historical_measurements || 0} data_points=${manifest.counts?.data_points || 0}`);
     const total = BOOTSTRAP_ENTITIES.reduce((sum, table) => sum + Number(manifest.counts?.[table] || 0), 0);
     await updateBootstrapRun(runId, { total_items: total, started_at: nowMysql(), progress_percent: 0 });
     const identity = await requestJson(`${hostUrl}/api/cluster/self-identity`).catch(() => ({}));
@@ -417,12 +429,12 @@ const runFullBootstrap = async (runId, hostUrl) => {
       await updateBootstrapRun(runId, { current_entity: table });
       const entityTotal = Number(manifest.counts?.[table] || 0);
       for (let offset = 0; offset < entityTotal; offset += 500) {
-        const exported = await requestJson(`${hostUrl}/api/sync/bootstrap/export?entity_type=${encodeURIComponent(table)}&offset=${offset}&limit=500`);
+        const exported = await requestJson(`${hostUrl}/api/sync/bootstrap/export?entity_type=${encodeURIComponent(table)}&offset=${offset}&limit=500&${requester}`);
         await applyBootstrapItems(table, exported.items || [], identity.node_uuid || crypto.randomUUID());
         processed += exported.items?.length || 0;
         const percent = total ? Math.min(100, (processed / total) * 100) : 100;
         await updateBootstrapRun(runId, { processed_items: processed, progress_percent: percent });
-        if (table === 'historical_measurements' || exported.items?.length) logger.info(`[bootstrap] ${table} ${Math.min(offset + (exported.items?.length || 0), entityTotal)}/${entityTotal}`);
+        if (table === 'historical_measurements' || exported.items?.length) logger.info(`[bootstrap-client] local=${local?.node_name || env.serverName} receiving_from=${exporter.node_name || '-'} host_url=${hostUrl} entity=${table} progress=${Math.min(offset + (exported.items?.length || 0), entityTotal)}/${entityTotal}`);
       }
     }
     let since = manifest.server_time;
@@ -438,16 +450,23 @@ const runFullBootstrap = async (runId, hostUrl) => {
     }
     if (identity.node_uuid) await updateCursor(identity.node_uuid, lastSeen, null, { nodeName: identity.node_name });
     await updateBootstrapRun(runId, { status: 'DONE', current_entity: null, processed_items: processed, progress_percent: 100, finished_at: nowMysql(), error_message: null });
-    logger.info('[bootstrap] concluído');
+    logger.info('[bootstrap-client] concluído');
   } catch (error) {
-    logger.error(`[bootstrap] falhou: ${error.message}`);
+    logger.error(`[bootstrap-client] falhou: ${error.message}`);
     await updateBootstrapRun(runId, { status: 'FAILED', error_message: error.message, finished_at: nowMysql() }).catch(() => {});
   }
 };
 
-const startFullBootstrap = async ({ host_url }) => {
+const startFullBootstrap = async ({ host_url, manual_confirm = false, ignore_clear_lock = false } = {}) => {
   const baseUrl = normalizeUrl(host_url)?.replace(/\/+$/, '');
   if (!baseUrl) throw new Error('host_url obrigatório');
+  const lock = await clearAllLock.getLock();
+  if (lock.exists && !manual_confirm && !ignore_clear_lock) {
+    const error = new Error('Bootstrap bloqueado por .storage/clear-all.lock. Inicie manualmente pelo painel para confirmar.');
+    error.statusCode = 409;
+    throw error;
+  }
+  if (lock.exists && manual_confirm) await clearAllLock.removeLock();
   const [result] = await pool.execute(
     `INSERT INTO bootstrap_runs (host_url, status, started_at) VALUES (?, 'RUNNING', ?)`,
     [baseUrl, nowMysql()]

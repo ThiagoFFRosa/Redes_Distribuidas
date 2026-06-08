@@ -22,6 +22,7 @@ const dashboardRoutes = require('./routes/dashboard.routes');
 const publicMonitoringRoutes = require('./routes/public-monitoring.routes');
 const importRoutes = require('./routes/import.routes');
 const syncRoutes = require('./routes/sync.routes');
+const adminRoutes = require('./routes/admin.routes');
 const processingRoutes = require('./routes/processing.routes');
 const chartWorker = require('./services/chart-worker.service');
 const syncWorker = require('./services/sync-worker');
@@ -84,6 +85,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/public', publicMonitoringRoutes);
 app.use('/api/imports', importRoutes);
 app.use('/api/sync', syncRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api/processing', processingRoutes);
 app.use((error, req, res, next) => {
   console.error('[server] erro não tratado:', error);
@@ -113,13 +115,32 @@ const start = async () => {
   const startup = await clusterStartupService.initialize();
   heartbeatService.start();
   chartWorker.start();
-  syncWorker.start();
+  if (startup.clearAllLock?.exists) {
+    console.log('[startup] sync automático bloqueado por .storage/clear-all.lock.');
+  } else {
+    syncWorker.start();
+  }
   if (startup.selfNode) await ngrokCoordinator.start();
   else console.log('[ngrok] ignorado: servidor local ainda não configurado');
 
   const server = app.listen(env.port, env.bindHost, () => {
     console.log(`[server] escutando em ${env.bindHost}:${env.port}`);
     logAccessUrls(env.port, Boolean(startup.selfNode));
+    if (env.autoJoinHostOnStartup && !startup.clearAllLock?.exists && env.autoJoinHostUrl) {
+      setImmediate(async () => {
+        try {
+          await fetch(`http://127.0.0.1:${env.port}/api/cluster/request-join-host`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host_url: env.autoJoinHostUrl })
+          });
+        } catch (error) {
+          console.error(`[startup] AUTO_JOIN_HOST_ON_STARTUP falhou: ${error.message}`);
+        }
+      });
+    } else if (env.autoJoinHostOnStartup && startup.clearAllLock?.exists) {
+      console.log('[startup] AUTO_JOIN_HOST_ON_STARTUP bloqueado por .storage/clear-all.lock.');
+    }
   });
   server.on('error', handleListenError);
 };

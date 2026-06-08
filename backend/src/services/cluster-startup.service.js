@@ -2,15 +2,21 @@ const env = require('../config/env');
 const repo = require('./cluster-node.repository');
 const ngrokCoordinator = require('./ngrok-coordinator.service');
 const healthService = require('./cluster-health.service');
+const clearAllLock = require('./clear-all-lock.service');
 
 class ClusterStartupService {
   async initialize() {
+    const lock = await clearAllLock.getLock();
+    if (lock.exists) {
+      console.log('[startup] clear-all recente detectado; bootstrap automático bloqueado.');
+      console.log('[startup] use o painel para iniciar bootstrap manualmente.');
+    }
     console.log('[cluster-db] carregando configuração local do banco...');
     const selfNode = await repo.getSelfNode();
 
     if (!selfNode) {
       console.log('[cluster] Servidor local ainda não configurado no banco. Acesse o painel e configure este servidor.');
-      return { startedNgrok: false, selfNode: null };
+      return { startedNgrok: false, selfNode: null, clearAllLock: lock };
     }
 
     console.log(`[cluster-db] servidor local: ${selfNode.node_name} / ${selfNode.tailscale_ip} / ${selfNode.role}`);
@@ -29,7 +35,7 @@ class ClusterStartupService {
     if (activeExternalHost) {
       console.log(`[cluster-db] HOST externo online encontrado: ${activeExternalHost.node_name}`);
       console.log('[ngrok] não iniciado neste servidor');
-      return { startedNgrok: false, selfNode };
+      return { startedNgrok: false, selfNode, clearAllLock: lock };
     }
 
     console.log('[cluster-db] nenhum HOST externo online encontrado');
@@ -37,7 +43,7 @@ class ClusterStartupService {
       console.log('[cluster-db] servidor local configurado como HOST');
       console.log('[ngrok] iniciando túnel...');
       const status = await ngrokCoordinator.performCheckCycle();
-      return { startedNgrok: Boolean(status?.ngrok_online && status?.owner_node_uuid === selfNode.node_uuid), selfNode };
+      return { startedNgrok: Boolean(status?.ngrok_online && status?.owner_node_uuid === selfNode.node_uuid), selfNode, clearAllLock: lock };
     }
 
     if (selfNode.role === 'UNKNOWN') {
@@ -46,7 +52,7 @@ class ClusterStartupService {
     } else {
       console.log('[cluster-db] servidor local em STANDBY; ngrok não será iniciado');
     }
-    return { startedNgrok: false, selfNode };
+    return { startedNgrok: false, selfNode, clearAllLock: lock };
   }
 }
 

@@ -6,6 +6,7 @@ const syncWorker = require('../services/sync-worker');
 const syncEventService = require('../services/sync-event.service');
 const { requireAuth } = require('../services/auth.service');
 const pool = require('../database/connection');
+const clearAllLock = require('../services/clear-all-lock.service');
 
 const router = express.Router();
 
@@ -51,12 +52,23 @@ router.post('/push-to-node', requireClusterSecret, async (req, res, next) => {
   try { res.json(await coordinator.pushToNode(req.body || {})); } catch (error) { next(error); }
 });
 
-router.get('/bootstrap/manifest', requireClusterSecret, async (_req, res, next) => {
-  try { res.json(await coordinator.getBootstrapManifest()); } catch (error) { next(error); }
+router.get('/bootstrap/manifest', requireClusterSecret, async (req, res, next) => {
+  try {
+    res.json(await coordinator.getBootstrapManifest({
+      requester_name: req.query.requester_name,
+      requester_ip: req.query.requester_ip || req.ip
+    }));
+  } catch (error) { next(error); }
 });
 
 router.get('/bootstrap/export', requireClusterSecret, async (req, res, next) => {
-  try { res.json(await coordinator.exportBootstrapEntity(req.query || {})); } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message }); next(error); }
+  try {
+    res.json(await coordinator.exportBootstrapEntity({
+      ...(req.query || {}),
+      requester_name: req.query.requester_name,
+      requester_ip: req.query.requester_ip || req.ip
+    }));
+  } catch (error) { if (error.statusCode) return res.status(error.statusCode).json({ ok: false, message: error.message }); next(error); }
 });
 
 router.get('/fingerprint', requireClusterSecretOrAuth, async (_req, res, next) => {
@@ -64,7 +76,7 @@ router.get('/fingerprint', requireClusterSecretOrAuth, async (_req, res, next) =
 });
 
 router.post('/full-bootstrap', requireAuth, async (req, res, next) => {
-  try { res.json(await coordinator.startFullBootstrap(req.body || {})); } catch (error) { next(error); }
+  try { res.json(await coordinator.startFullBootstrap({ ...(req.body || {}), manual_confirm: true })); } catch (error) { next(error); }
 });
 
 router.get('/full-bootstrap/status', requireAuth, async (_req, res, next) => {
@@ -129,6 +141,8 @@ router.post('/run-now', requireAuth, async (_req, res, next) => {
 
 router.post('/backfill', requireAuth, async (req, res, next) => {
   try {
+    const lock = await clearAllLock.getLock();
+    if (lock.exists) return res.status(409).json({ ok: false, message: 'Backfill bloqueado por .storage/clear-all.lock. Inicie ações manuais após confirmação.' });
     const dryRun = req.body?.dry_run !== false;
     res.json(await syncEventService.backfillExistingSyncEvents({ dryRun }));
   } catch (error) { next(error); }
