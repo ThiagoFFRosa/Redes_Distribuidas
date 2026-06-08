@@ -103,14 +103,20 @@ class NgrokCoordinatorService {
       if (node.is_self) checked.push({ ...node, status: ONLINE });
       else checked.push(await healthService.checkNode(node).catch(() => ({ ...node, status: OFFLINE })));
     }
-    const online = checked.filter((node) => node.status === ONLINE);
-    return sortNgrokCandidates(online)[0] || null;
+    const onlineHosts = checked.filter((node) => node.status === ONLINE && node.role === 'HOST');
+    return sortNgrokCandidates(onlineHosts)[0] || null;
   }
 
   async performCheckCycle() {
     if (running) return lastStatus;
     running = true;
     try {
+      const self = await repo.getSelfNode();
+      if (!self) {
+        logger.info('[ngrok] ignorado: servidor local ainda não configurado');
+        lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: null, owner_node_name: null, public_url: null, last_checked_at: new Date().toISOString(), reason: 'self_not_configured' };
+        return lastStatus;
+      }
       const nodes = await repo.getAllNodes();
       const candidates = nodes.filter((node) => node.public_url && (node.ngrok_enabled_currently || /ngrok/i.test(node.public_url)));
       let onlineOwner = null;
@@ -132,7 +138,6 @@ class NgrokCoordinatorService {
       await repo.setRuntimeState('ngrok_status', OFFLINE);
       await repo.setRuntimeState('ngrok_last_check_at', new Date().toISOString());
       const desired = await repo.getRuntimeState('desired_ngrok_owner_node_uuid');
-      const self = await repo.getSelfNode();
       let winner = desired?.state_value ? nodes.find((node) => node.node_uuid === desired.state_value) : null;
       const requestedAt = desired?.state_value ? await repo.getRuntimeState('ngrok_takeover_requested_at') : null;
       if (winner && requestedAt?.state_value) {
@@ -142,8 +147,12 @@ class NgrokCoordinatorService {
       if (!winner) winner = await this.electWinner();
       logger.info(`[ngrok-election] winner=${winner?.node_name || '-'} reason=${winner?.role === 'HOST' ? 'HOST_PRIORITY' : 'POWER_SCORE'}`);
       if (winner?.node_uuid && self?.node_uuid && winner.node_uuid === self.node_uuid) {
-        const url = await ngrokService.startTunnelWithRetry(env.port);
-        await this.claimLocal(url, { reason: desired?.state_value === self.node_uuid ? 'manual_takeover' : 'auto_election' });
+        if (self.role === 'HOST') {
+          const url = await ngrokService.startTunnelWithRetry(env.port);
+          await this.claimLocal(url, { reason: desired?.state_value === self.node_uuid ? 'manual_takeover' : 'auto_election' });
+        } else {
+          logger.info('[ngrok] não iniciado neste servidor');
+        }
       }
       lastStatus = { ok: true, ngrok_online: false, owner_node_uuid: winner?.node_uuid || null, owner_node_name: winner?.node_name || null, public_url: winner?.public_url || null, last_checked_at: new Date().toISOString(), reason: offlineReason };
       return lastStatus;
@@ -155,6 +164,7 @@ class NgrokCoordinatorService {
   async assumeLocal() {
     const self = await repo.getSelfNode();
     if (!self?.node_uuid) throw new Error('Servidor self não configurado.');
+    if (self.role !== 'HOST') throw new Error('Ngrok só pode ser assumida por servidor configurado como HOST.');
     const status = await this.getStatus();
     if (status.ngrok_online && status.owner_node_uuid === self.node_uuid) {
       return { ok: true, already_owner: true, message: 'Esta máquina já está com a ngrok ativa.', status };
@@ -175,8 +185,13 @@ class NgrokCoordinatorService {
     return { ok: true, message: 'Ngrok assumida por esta máquina.', status: claimed };
   }
 
-  start() {
+  async start() {
     if (timer) return;
+    const self = await repo.getSelfNode();
+    if (!self) {
+      logger.info('[ngrok] ignorado: servidor local ainda não configurado');
+      return;
+    }
     timer = setInterval(() => this.performCheckCycle().catch((error) => logger.error(`[ngrok-check] erro: ${error.message}`)), Number(env.ngrokCheckIntervalMs || 10000));
     setTimeout(() => this.performCheckCycle().catch((error) => logger.error(`[ngrok-check] erro: ${error.message}`)), 2500);
   }

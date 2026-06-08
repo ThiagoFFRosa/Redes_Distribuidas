@@ -26,6 +26,7 @@ const processingRoutes = require('./routes/processing.routes');
 const chartWorker = require('./services/chart-worker.service');
 const syncWorker = require('./services/sync-worker');
 const ngrokCoordinator = require('./services/ngrok-coordinator.service');
+const { getSuggestedAccessUrls } = require('./utils/network-addresses');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -90,19 +91,40 @@ app.use((error, req, res, next) => {
   return res.status(error.status || 500).json({ ok: false, message: error.message || 'Erro interno do servidor.', error: error.status ? undefined : 'Erro interno do servidor.' });
 });
 
+const logAccessUrls = (port, configured) => {
+  const urls = getSuggestedAccessUrls(port);
+  if (!configured) console.log('[server] painel de configuração disponível em:');
+  console.log(`[server] acesso local: ${urls.localUrl}`);
+  if (urls.tailscaleUrl) console.log(`[server] acesso Tailscale: ${urls.tailscaleUrl}`);
+  else if (urls.lanUrls.length) console.log(`[server] IPs disponíveis: ${urls.lanUrls.join(', ')}`);
+};
+
+const handleListenError = (error) => {
+  if (error.code !== 'EADDRINUSE') throw error;
+  console.error(`[server] erro: porta ${env.port} já está em uso.`);
+  console.error('[server] encerre o processo que está usando a porta ou configure outra PORT no .env.');
+  console.error(`[server] Linux: sudo lsof -i :${env.port}`);
+  console.error(`[server] Linux: sudo ss -ltnp | grep :${env.port}`);
+  console.error(`[server] Windows: netstat -ano | findstr :${env.port}`);
+  process.exitCode = 1;
+};
+
 const start = async () => {
-  await clusterStartupService.initialize();
+  const startup = await clusterStartupService.initialize();
   heartbeatService.start();
   chartWorker.start();
   syncWorker.start();
-  ngrokCoordinator.start();
-  app.listen(env.port, async () => {
-    console.log(`Custom NewTab API running on http://localhost:${env.port}`);
-    const selfNode = await repo.getSelfNode();
-    const display = selfNode?.node_name || 'server';
-    const hostIp = selfNode?.tailscale_ip || '127.0.0.1';
-    console.log(`[${display}] rodando em http://${hostIp}:${env.port} (porta ${env.port})`);
+  if (startup.selfNode) await ngrokCoordinator.start();
+  else console.log('[ngrok] ignorado: servidor local ainda não configurado');
+
+  const server = app.listen(env.port, env.bindHost, () => {
+    console.log(`[server] escutando em ${env.bindHost}:${env.port}`);
+    logAccessUrls(env.port, Boolean(startup.selfNode));
   });
+  server.on('error', handleListenError);
 };
 
-start();
+start().catch((error) => {
+  console.error('[server] falha ao iniciar:', error);
+  process.exitCode = 1;
+});
