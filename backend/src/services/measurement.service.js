@@ -2,6 +2,7 @@ const dataPointRepository = require('../repositories/data-point.repository');
 const measurementRepository = require('../repositories/measurement.repository');
 const alertRepository = require('../repositories/alert.repository');
 const eventQueueRepository = require('../repositories/event-queue.repository');
+const historicalChartService = require('./historical-chart.service');
 
 const normalizeDateTime = (value) => {
   const date = value ? new Date(value) : new Date();
@@ -43,6 +44,10 @@ const createMeasurement = async (payload, userId = null) => {
     source: payload.source || 'MANUAL',
     observation: payload.observation || null,
     created_by_user_id: userId
+  });
+
+  await historicalChartService.markChartCacheStale(point.uuid).catch((error) => {
+    console.warn(`[historical-chart] falha ao marcar cache stale para data_point_uuid=${point.uuid}: ${error.message}`);
   });
 
   await eventQueueRepository.create({

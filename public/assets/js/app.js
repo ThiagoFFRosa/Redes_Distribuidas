@@ -259,6 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!canvas) return;
         if (state.historicalChart) state.historicalChart.destroy();
         const normalized = normalizeChartPayload(payload);
+        const points = normalized?.points || [];
         const datasets = (normalized?.datasets || []).map((dataset) => ({
             ...dataset,
             borderColor: dataset.borderColor || '#0d9488',
@@ -270,7 +271,25 @@ document.addEventListener('DOMContentLoaded', () => {
         state.historicalChart = new Chart(canvas, {
             type: 'line',
             data: { labels: normalized?.labels || [], datasets },
-            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true } }, scales: { y: { title: { display: true, text: normalized?.unit || 'm' } } } }
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true },
+                    tooltip: {
+                        callbacks: {
+                            label: (context) => {
+                                const point = points[context.dataIndex] || {};
+                                const value = context.parsed?.y ?? context.raw;
+                                const unit = point.unit || normalized?.unit || 'm';
+                                const source = point.source === 'SITE' ? 'Site' : (point.source || 'CSV');
+                                return `${context.label} — ${value} ${unit} — Origem: ${source}`;
+                            }
+                        }
+                    }
+                },
+                scales: { y: { title: { display: true, text: normalized?.unit || 'm' } } }
+            }
         });
     };
 
@@ -304,21 +323,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = normalizeChartPayload(cache?.data || cache?.payload);
         const summary = cache?.summary || {};
         const hasRenderableCache = isValidChartPayload(payload);
-        const status = hasRenderableCache && data.cache?.available ? 'READY' : responseStatus;
+        const status = hasRenderableCache && data.cache?.available ? (responseStatus === 'STALE' || cache?.stale ? 'STALE' : 'READY') : responseStatus;
         document.getElementById('historical-title').textContent = `Histórico do ponto: ${point?.name || pointId}`;
         document.getElementById('historical-message').textContent = status === 'READY' && responseStatus === 'WAITING_CACHE_SYNC'
             ? 'Cache local disponível. Gráfico pronto.'
-            : (data.message || '');
+            : status === 'STALE'
+                ? (data.message || 'Existem medições novas. Atualize o gráfico.')
+                : (data.message || '');
         renderHistoricalSummary(summary, status, hasRenderableCache);
         document.getElementById('historical-job').innerHTML = data.job ? `Node: <strong>${escapeHtml(data.job.assigned_to || data.job.assigned_node_name || '-')}</strong> · Status do job: <strong>${escapeHtml(data.job.status || '-')}</strong> · Status do cache: <strong>${escapeHtml(status)}</strong> · Progresso: <strong>${data.job.progress_percent || 0}%</strong> · Tempo estimado: <strong>${data.job.estimated_seconds || '-'}s</strong>` : `Status do cache: <strong>${escapeHtml(status)}</strong>`;
 
-        if (status === 'READY' && hasRenderableCache) {
+        if ((status === 'READY' || status === 'STALE') && hasRenderableCache) {
             setHistoricalCanvasVisible(true);
             renderHistoricalChart(payload);
         } else {
             if (state.historicalChart) { state.historicalChart.destroy(); state.historicalChart = null; }
             const emptyMessage = status === 'NO_DATA'
-                ? 'Este ponto ainda não possui dados históricos/medições.'
+                ? 'Este ponto ainda não possui dados históricos ou medições cadastradas.'
                 : status === 'FAILED'
                     ? (data.message || 'Falha ao gerar gráfico histórico.')
                     : status === 'CACHE_MISSING_LOCAL'

@@ -26,7 +26,8 @@ const reduceChartPayload = (payload) => {
   const values = Array.isArray(payload.values) ? payload.values : [];
   const datasets = Array.isArray(payload.datasets) ? payload.datasets : [];
   const firstDatasetValues = Array.isArray(datasets[0]?.data) ? datasets[0].data : [];
-  const maxLength = Math.max(labels.length, values.length, firstDatasetValues.length);
+  const points = Array.isArray(payload.points) ? payload.points : [];
+  const maxLength = Math.max(labels.length, values.length, firstDatasetValues.length, points.length);
   if (maxLength <= MAX_CHART_SYNC_POINTS) return payload;
   const sampledLabels = downsampleSeries(labels);
   const sampledValues = downsampleSeries(values.length ? values : firstDatasetValues);
@@ -34,6 +35,7 @@ const reduceChartPayload = (payload) => {
     ...payload,
     labels: sampledLabels,
     values: sampledValues,
+    points: downsampleSeries(points),
     datasets: datasets.map((dataset, index) => ({
       ...dataset,
       data: downsampleSeries(Array.isArray(dataset.data) ? dataset.data : (index === 0 ? sampledValues : []))

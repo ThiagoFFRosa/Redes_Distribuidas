@@ -3,6 +3,7 @@ const { hashPayload } = require('./sync-event.service');
 const { runWithoutSyncEvents } = require('./sync-context.service');
 const { toMysqlDateTime, nowMysql } = require('../utils/mysql-date');
 const logger = require('../utils/logger');
+const chartService = require('./historical-chart.service');
 const registryService = require('./synced-entity-registry.service');
 
 const json = (value) => {
@@ -179,6 +180,7 @@ const upsertMeasurement = async (event, c) => {
      ON DUPLICATE KEY UPDATE data_point_id=VALUES(data_point_id), measurement_type=VALUES(measurement_type), value=VALUES(value), unit=VALUES(unit), measured_at=VALUES(measured_at), source=VALUES(source), observation=VALUES(observation)`,
     [p.uuid, dataPointId, p.measurement_type || 'RIVER_LEVEL', p.value, p.unit || 'm', asDate(p.measured_at), p.source || 'MANUAL', p.observation || null]
   );
+  await chartService.markChartCacheStale(p.data_point_uuid, c).catch((error) => logger.warn(`[historical-chart] falha ao marcar cache stale após sync measurement data_point_uuid=${p.data_point_uuid || '-'}: ${error.message}`));
 };
 
 const upsertAlert = async (event, c) => {
@@ -223,6 +225,7 @@ const upsertHistoricalMeasurement = async (event, c) => {
      ON DUPLICATE KEY UPDATE uuid=VALUES(uuid), import_id=VALUES(import_id), raw_value=VALUES(raw_value), raw_unit=VALUES(raw_unit), value=VALUES(value), unit=VALUES(unit), max_value=VALUES(max_value), min_value=VALUES(min_value), source=VALUES(source)`,
     [p.uuid, dataPointId, importId, asDateOnly(p.measured_at), p.raw_value ?? null, p.raw_unit || 'cm', p.value, p.unit || 'm', p.max_value ?? null, p.min_value ?? null, p.source || 'CSV_IMPORT']
   );
+  await chartService.markChartCacheStale(p.data_point_uuid, c).catch((error) => logger.warn(`[historical-chart] falha ao marcar cache stale após sync CSV data_point_uuid=${p.data_point_uuid || '-'}: ${error.message}`));
 };
 
 
