@@ -25,6 +25,7 @@ const syncRoutes = require('./routes/sync.routes');
 const processingRoutes = require('./routes/processing.routes');
 const chartWorker = require('./services/chart-worker.service');
 const syncWorker = require('./services/sync-worker');
+const ngrokCoordinator = require('./services/ngrok-coordinator.service');
 
 const app = express();
 const publicPath = path.resolve(__dirname, '../../public');
@@ -94,6 +95,7 @@ const start = async () => {
   heartbeatService.start();
   chartWorker.start();
   syncWorker.start();
+  ngrokCoordinator.start();
   app.listen(env.port, async () => {
     console.log(`Custom NewTab API running on http://localhost:${env.port}`);
     const selfNode = await repo.getSelfNode();

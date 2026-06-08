@@ -16,7 +16,10 @@ const mapNode = (row) => ({
   is_self: Number(row.is_self),
   port: asNumber(row.port, null),
   power_score: asNumber(row.power_score, 5),
-  structural_version: asNumber(row.structural_version, 1)
+  structural_version: asNumber(row.structural_version, 1),
+  ngrok_enabled_currently: Number(row.ngrok_enabled_currently || 0),
+  ngrok_status: row.ngrok_status || 'UNKNOWN',
+  ngrok_last_seen_at: row.ngrok_last_seen_at || null
 });
 
 const toJsonValue = (value) => {
@@ -48,6 +51,9 @@ const pickClusterNodeStructuralFields = (node = {}) => ({
   node_name: node.node_name || null,
   tailscale_ip: node.tailscale_ip || null,
   public_url: node.public_url || null,
+  ngrok_enabled_currently: Number(node.ngrok_enabled_currently || 0),
+  ngrok_status: node.ngrok_status || 'UNKNOWN',
+  ngrok_last_seen_at: node.ngrok_last_seen_at || null,
   port: node.port == null ? null : Number(node.port),
   role: node.role || null,
   power_score: node.power_score == null ? 5 : Number(node.power_score),
@@ -151,6 +157,9 @@ class ClusterNodeRepository {
       last_healthcheck_at: toMysqlDateTime(data.last_healthcheck_at) ?? existing?.last_healthcheck_at ?? null,
       healthcheck_error: data.healthcheck_error ?? existing?.healthcheck_error ?? null,
       metadata: toJsonValue(data.metadata ?? existing?.metadata ?? null),
+      ngrok_enabled_currently: Number(data.ngrok_enabled_currently ?? existing?.ngrok_enabled_currently ?? 0),
+      ngrok_status: data.ngrok_status || existing?.ngrok_status || 'UNKNOWN',
+      ngrok_last_seen_at: toMysqlDateTime(data.ngrok_last_seen_at) ?? existing?.ngrok_last_seen_at ?? null,
       power_score: asNumber(data.power_score, existing?.power_score ?? 5),
       structural_version: asNumber(data.structural_version, existing?.structural_version ?? 1)
     };
@@ -207,9 +216,9 @@ class ClusterNodeRepository {
 
   async createNode(payload, options = {}) {
     const [result] = await db.execute(`INSERT INTO cluster_nodes
-      (node_uuid, node_name, tailscale_ip, public_url, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score, structural_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, payload.structural_version ?? 1]);
+      (node_uuid, node_name, tailscale_ip, public_url, ngrok_enabled_currently, ngrok_status, ngrok_last_seen_at, port, role, status, is_self, last_heartbeat_at, last_healthcheck_at, healthcheck_error, metadata, power_score, structural_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [payload.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, Number(payload.ngrok_enabled_currently || 0), payload.ngrok_status || 'UNKNOWN', payload.ngrok_last_seen_at || null, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, payload.structural_version ?? 1]);
     const node = await this.findById(result.insertId);
     await this.maybeCreateClusterNodeSyncEvent(null, node, options);
     return node;
@@ -220,12 +229,12 @@ class ClusterNodeRepository {
     if (!before) return null;
     const candidate = { ...before, ...payload };
     const structuralChanged = hasStructuralChange(before, candidate);
-    const structuralVersion = options.skipSyncEvent && payload.structural_version
-      ? Number(payload.structural_version)
+    const structuralVersion = options.skipSyncEvent
+      ? (payload.structural_version ? Number(payload.structural_version) : Number(before.structural_version || 1))
       : (structuralChanged ? Number(before.structural_version || 1) + 1 : Number(before.structural_version || 1));
-    await db.execute(`UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, port=?, role=?, status=?, is_self=?,
+    await db.execute(`UPDATE cluster_nodes SET node_uuid=?, node_name=?, tailscale_ip=?, public_url=?, ngrok_enabled_currently=?, ngrok_status=?, ngrok_last_seen_at=?, port=?, role=?, status=?, is_self=?,
       last_heartbeat_at=?, last_healthcheck_at=?, healthcheck_error=?, metadata=?, power_score=?, structural_version=? WHERE id=?`,
-    [payload.node_uuid || before.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, structuralVersion, id]);
+    [payload.node_uuid || before.node_uuid || crypto.randomUUID(), payload.node_name, payload.tailscale_ip, payload.public_url, Number(payload.ngrok_enabled_currently || 0), payload.ngrok_status || 'UNKNOWN', payload.ngrok_last_seen_at || null, payload.port ?? null, payload.role, payload.status, Number(payload.is_self || 0), payload.last_heartbeat_at, payload.last_healthcheck_at, payload.healthcheck_error, toJsonValue(payload.metadata), payload.power_score ?? 5, structuralVersion, id]);
     const node = await this.findById(id);
     await this.maybeCreateClusterNodeSyncEvent(before, node, options);
     return node;
@@ -255,6 +264,47 @@ class ClusterNodeRepository {
     if (reason === 'heartbeat') logger.debug('[heartbeat] self marcado ONLINE sem gerar sync_event');
     else logger.debug(`[${reason}] status atualizado para ${node.node_name} sem gerar sync_event`);
     return node;
+  }
+
+
+
+  async setRuntimeState(key, value) {
+    await db.execute(
+      `INSERT INTO cluster_runtime_state (state_key, state_value) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE state_value=VALUES(state_value)`,
+      [key, value == null ? null : String(value)]
+    );
+  }
+
+  async getRuntimeState(key) {
+    const [rows] = await db.execute('SELECT state_value, updated_at FROM cluster_runtime_state WHERE state_key=? LIMIT 1', [key]);
+    return rows[0] || null;
+  }
+
+  async getRuntimeStates(keys = []) {
+    if (!keys.length) return {};
+    const placeholders = keys.map(() => '?').join(',');
+    const [rows] = await db.execute(`SELECT state_key, state_value, updated_at FROM cluster_runtime_state WHERE state_key IN (${placeholders})`, keys);
+    return rows.reduce((acc, row) => { acc[row.state_key] = row; return acc; }, {});
+  }
+
+  async markNgrokOwner(nodeUuid, publicUrl, status = 'ONLINE', options = {}) {
+    const now = new Date();
+    await db.execute("UPDATE cluster_nodes SET ngrok_enabled_currently=0, ngrok_status='OFFLINE' WHERE node_uuid <> ?", [nodeUuid || '']);
+    const node = nodeUuid ? await this.findByNodeUuid(nodeUuid) : null;
+    let updated = null;
+    if (node) {
+      updated = await this.updateNodeStructuralData(node.id, {
+        public_url: publicUrl || node.public_url || null,
+        ngrok_enabled_currently: status === 'ONLINE' ? 1 : 0,
+        ngrok_status: status,
+        ngrok_last_seen_at: status === 'ONLINE' ? now : node.ngrok_last_seen_at
+      }, options);
+    }
+    await this.setRuntimeState('ngrok_owner_node_uuid', status === 'ONLINE' ? (nodeUuid || '') : '');
+    await this.setRuntimeState('ngrok_status', status);
+    await this.setRuntimeState('ngrok_last_check_at', now.toISOString());
+    return updated;
   }
 
   async deleteNode(id) { await db.execute('DELETE FROM cluster_nodes WHERE id=?', [id]); }

@@ -188,7 +188,10 @@ const normalizeJob = (job) => job && ({
 const chooseAssignee = async () => {
   const selection = await selectBestProcessingNode();
   const best = selection?.bestNode || selection?.selfNode || null;
-  return { selection, assignedNode: best };
+  const self = selection?.selfNode || null;
+  if (!self) return { selection, assignedNode: best };
+  const assignedNode = best && Number(best.power_score ?? 5) > Number(self.power_score ?? 5) ? best : self;
+  return { selection, assignedNode };
 };
 
 const createOrReuseJob = async (dataPoint, importId = null, options = {}) => {
@@ -435,7 +438,7 @@ const generateChartForJob = async (job, selfNode) => {
     const [[cacheRow]] = await connection.execute('SELECT id, uuid, source_job_uuid FROM chart_cache WHERE data_point_uuid=? AND chart_type=? ORDER BY generated_at DESC, id DESC LIMIT 1', [dataPointUuid, CHART_TYPE]);
     cacheId = cacheId || cacheRow?.id || null;
     cacheUuid = cacheRow?.uuid || null;
-    if (!cacheId) throw new Error('chart_cache não foi salvo');
+    if (!cacheId || !cacheUuid) throw new Error('chart_cache não foi salvo com uuid válido');
     await connection.execute("UPDATE chart_generation_jobs SET status='DONE', progress_percent=100, finished_at=NOW(), error_message=NULL WHERE id=?", [job.id]);
     await createCacheSyncEvent(cacheId, connection);
     await createJobSyncEvent(job.id, connection);
@@ -450,7 +453,8 @@ const generateChartForJob = async (job, selfNode) => {
   }
 
   console.log(`[chart-worker] job DONE uuid=${job.uuid}`);
-  console.log(`[chart-worker] chart_cache salvo uuid=${cacheUuid || '-'} data_point_uuid=${dataPointUuid} points=${total} source_job_uuid=${job.uuid}`);
+  if (!cacheUuid) throw new Error('chart_cache salvo sem uuid');
+  console.log(`[chart-worker] chart_cache saved uuid=${cacheUuid} data_point_uuid=${dataPointUuid} points=${total} source_job_uuid=${job.uuid}`);
   return { payload, summary };
 };
 

@@ -1,6 +1,6 @@
 const env = require('../config/env');
 const repo = require('./cluster-node.repository');
-const ngrokService = require('./ngrok.service');
+const ngrokCoordinator = require('./ngrok-coordinator.service');
 const healthService = require('./cluster-health.service');
 
 class ClusterStartupService {
@@ -36,8 +36,8 @@ class ClusterStartupService {
     if (selfNode.role === 'HOST') {
       console.log('[cluster-db] servidor local configurado como HOST');
       console.log('[ngrok] iniciando túnel...');
-      await ngrokService.startTunnelWithRetry(env.port);
-      return { startedNgrok: Boolean(ngrokService.getPublicUrl()), selfNode };
+      const status = await ngrokCoordinator.performCheckCycle();
+      return { startedNgrok: Boolean(status?.ngrok_online && status?.owner_node_uuid === selfNode.node_uuid), selfNode };
     }
 
     if (selfNode.role === 'UNKNOWN') {

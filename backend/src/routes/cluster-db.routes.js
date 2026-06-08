@@ -7,6 +7,7 @@ const env = require('../config/env');
 const logger = require('../utils/logger');
 const { getNodeSyncTarget } = require('../utils/sync-targets');
 const syncCoordinator = require('../services/sync-coordinator.service');
+const ngrokCoordinator = require('../services/ngrok-coordinator.service');
 
 const router = express.Router();
 const ROLES = ['HOST', 'STANDBY', 'UNKNOWN'];
@@ -94,6 +95,10 @@ const serializeClusterNode = (node = {}) => ({
   created_at: node.created_at || null,
   updated_at: node.updated_at || null,
   structural_version: Number(node.structural_version || 1),
+  ngrok_enabled_currently: Number(node.ngrok_enabled_currently || 0),
+  ngrok_status: node.ngrok_status || 'UNKNOWN',
+  ngrok_last_seen_at: node.ngrok_last_seen_at || null,
+  has_public_endpoint: Number(node.ngrok_enabled_currently || 0) === 1,
   sync_target_url: getNodeSyncTarget(node)
 });
 
@@ -116,6 +121,10 @@ const applyBootstrapNodes = async (nodes = []) => {
       is_self: sameAsSelf ? 1 : 0,
       power_score: normalizePowerScore(rawNode.power_score) ?? 5,
       metadata: parseMetadata(rawNode.metadata),
+      structural_version: Number(rawNode.structural_version || 1),
+      ngrok_enabled_currently: Number(rawNode.ngrok_enabled_currently || 0),
+      ngrok_status: rawNode.ngrok_status || 'UNKNOWN',
+      ngrok_last_seen_at: rawNode.ngrok_last_seen_at || null,
       last_heartbeat_at: rawNode.last_heartbeat_at || null,
       last_healthcheck_at: rawNode.last_healthcheck_at || null,
       healthcheck_error: rawNode.healthcheck_error || null
@@ -123,6 +132,99 @@ const applyBootstrapNodes = async (nodes = []) => {
   }
   await repo.enforceSingleSelf();
 };
+
+
+const requireClusterSecret = (req, res, next) => {
+  const received = req.header('x-cluster-secret') || req.header('x-cluster-key');
+  const accepted = [env.clusterKey, env.sessionSecret].filter(Boolean);
+  if (!accepted.length) return res.status(500).json({ ok: false, message: 'CLUSTER_KEY/SESSION_SECRET não configurado.' });
+  if (!received || !accepted.includes(received)) return res.status(401).json({ ok: false, message: 'Não autorizado.' });
+  return next();
+};
+
+const structuralFingerprint = (node = {}) => {
+  const payload = {
+    node_uuid: node.node_uuid || null,
+    node_name: node.node_name || null,
+    role: node.role || null,
+    tailscale_ip: node.tailscale_ip || null,
+    public_url: normalizeNodePublicUrl(node),
+    port: normalizePort(node.port) || env.port,
+    power_score: normalizePowerScore(node.power_score) ?? 5,
+    structural_version: Number(node.structural_version || 1)
+  };
+  return { ...payload, checksum: crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex') };
+};
+
+const saveRemoteNodeList = async (nodes = []) => {
+  await applyBootstrapNodes(nodes);
+  return repo.getAllNodes();
+};
+
+router.post('/link-request', requireClusterSecret, async (req, res) => {
+  const { request_id, handshake_key, node, known_nodes } = req.body || {};
+  if (!handshake_key) return res.status(400).json({ ok: false, message: 'handshake_key obrigatório.' });
+  if (!node?.node_uuid && !node?.tailscale_ip) return res.status(400).json({ ok: false, message: 'node.node_uuid ou node.tailscale_ip obrigatório.' });
+  logger.info(`[cluster-link] request received from ${node.node_name || node.node_uuid || '-'}`);
+  const saved = await repo.upsertClusterNode({
+    node_uuid: node.node_uuid || null,
+    node_name: String(node.node_name || node.node_uuid || '').trim(),
+    tailscale_ip: String(node.tailscale_ip || '').trim(),
+    public_url: normalizeNodePublicUrl(node),
+    port: normalizePort(node.port) || env.port,
+    role: ROLES.includes(node.role) ? node.role : 'STANDBY',
+    status: STATUSES.includes(node.status) ? node.status : 'UNKNOWN',
+    is_self: 0,
+    power_score: normalizePowerScore(node.power_score) ?? 5,
+    metadata: parseMetadata(node.metadata),
+    structural_version: Number(node.structural_version || 1),
+    ngrok_enabled_currently: Number(node.ngrok_enabled_currently || 0),
+    ngrok_status: node.ngrok_status || 'UNKNOWN',
+    ngrok_last_seen_at: node.ngrok_last_seen_at || null
+  }, { reason: 'cluster-link' });
+  if (Array.isArray(known_nodes) && known_nodes.length) await saveRemoteNodeList(known_nodes);
+  const self = await repo.getSelfNode();
+  const allNodes = await repo.getAllNodes();
+  logger.info(`[cluster-link] approved; saved remote node ${saved.node_name}`);
+  logger.info(`[cluster-link] response includes self ${self?.node_name || '-'}`);
+  return res.json({
+    ok: true,
+    status: 'APPROVED',
+    request_id: request_id || null,
+    handshake_key,
+    accepted_by: self ? serializeClusterNode(self) : null,
+    known_nodes: allNodes.map(serializeClusterNode)
+  });
+});
+
+router.get('/nodes/fingerprint', requireClusterSecret, async (_req, res) => {
+  const nodes = await repo.getAllNodes();
+  res.json({ ok: true, nodes: nodes.map((node) => ({ ...structuralFingerprint(node), updated_at: node.updated_at || null })) });
+});
+
+router.post('/nodes/reconcile', requireClusterSecret, async (req, res) => {
+  const incoming = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
+  const before = await repo.getAllNodes();
+  await saveRemoteNodeList(incoming);
+  const after = await repo.getAllNodes();
+  res.json({ ok: true, received: incoming.length, before_count: before.length, after_count: after.length, nodes: after.map(serializeClusterNode) });
+});
+
+router.post('/ngrok/release', requireClusterSecret, async (req, res) => {
+  try { res.json(await ngrokCoordinator.releaseLocal(req.body || {})); }
+  catch (error) { res.status(500).json({ ok: false, message: error.message }); }
+});
+
+router.post('/ngrok/claim', requireClusterSecret, async (req, res) => {
+  const { owner_node_uuid, public_url } = req.body || {};
+  if (!owner_node_uuid) return res.status(400).json({ ok: false, message: 'owner_node_uuid obrigatório.' });
+  const node = await repo.markNgrokOwner(owner_node_uuid, normalizeUrl(public_url), 'ONLINE', { reason: 'ngrok-claim' });
+  res.json({ ok: true, node: node ? serializeClusterNode(node) : null });
+});
+
+router.get('/ngrok/status', requireClusterSecret, async (_req, res) => {
+  res.json(await ngrokCoordinator.getStatus());
+});
 
 router.post('/join-request', async (req, res) => {
   try {
@@ -210,6 +312,11 @@ router.get('/bootstrap', async (req, res) => {
 
 router.use(requireAuth);
 
+router.post('/ngrok/assume', async (_req, res) => {
+  try { res.json(await ngrokCoordinator.assumeLocal()); }
+  catch (error) { res.status(503).json({ ok: false, message: error.message }); }
+});
+
 router.get('/self', async (_req, res) => {
   try {
     const node = await repo.getSelfNode();
@@ -295,7 +402,9 @@ router.post('/request-join-host', async (req, res) => {
   if (!normalizedHostUrl) return res.status(400).json({ ok: false, message: 'host_url inválida.' });
 
   logger.info(`[request-join-host] self node carregado: ${self.node_name} / ${self.tailscale_ip}`);
-  const url = `${normalizedHostUrl.replace(/\/$/, '')}/api/cluster/join-request`;
+  const baseUrl = normalizedHostUrl.replace(/\/$/, '');
+  const linkUrl = `${baseUrl}/api/cluster/link-request`;
+  const legacyJoinUrl = `${baseUrl}/api/cluster/join-request`;
   logger.info(`[request-join-host] enviando solicitação para ${normalizedHostUrl}`);
 
   const payload = {
@@ -316,13 +425,33 @@ router.post('/request-join-host', async (req, res) => {
   };
 
   try {
-    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const handshakeKey = crypto.randomUUID();
+    const knownNodes = (await repo.getAllNodes()).map(serializeClusterNode);
+    const linkResponse = await fetch(linkUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Cluster-Secret': env.sessionSecret || env.clusterKey },
+      body: JSON.stringify({ request_id: crypto.randomUUID(), handshake_key: handshakeKey, node: serializeClusterNode(self), known_nodes: knownNodes })
+    }).catch(() => null);
+
+    if (linkResponse?.ok) {
+      const data = await linkResponse.json().catch(() => ({}));
+      if (data.status === 'APPROVED' && data.handshake_key === handshakeKey) {
+        const nodesToSave = [data.accepted_by, ...(data.known_nodes || [])].filter(Boolean);
+        await saveRemoteNodeList(nodesToSave);
+        const bootstrapRun = await syncCoordinator.startFullBootstrap({ host_url: normalizedHostUrl }).catch((error) => ({ ok: false, error: error.message }));
+        return res.json({ ...data, message: 'Máquinas vinculadas nos dois lados.', bootstrap: bootstrapRun });
+      }
+    }
+
+    const response = await fetch(legacyJoinUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return res.status(response.status).json(data);
 
     logger.info(`[request-join-host] resposta do host: ${data.status || (data.already_registered ? 'ALREADY_REGISTERED' : 'UNKNOWN')}`);
 
-    if (data.already_registered || data.status === 'APPROVED') {
+    if (data.accepted_by || data.already_registered || data.status === 'APPROVED') {
+      const nodesToSave = [data.accepted_by, ...(data.known_nodes || [])].filter(Boolean);
+      if (nodesToSave.length) await saveRemoteNodeList(nodesToSave);
       const bootstrapRun = await syncCoordinator.startFullBootstrap({ host_url: normalizedHostUrl });
       return res.json({ ...data, bootstrap: bootstrapRun });
     }
